@@ -771,7 +771,9 @@ const systemGhidraInstallationHost = (): GhidraInstallationHost => ({
       {
         encoding: "utf8",
         env: environment,
-        timeout: 5_000,
+        // A JDK's first start on a cold Windows host (antivirus scanning the
+        // runtime) can take well over five seconds.
+        timeout: 30_000,
         maxBuffer: JAVA_PROBE_MAX_OUTPUT_BYTES,
         windowsHide: true,
       },
