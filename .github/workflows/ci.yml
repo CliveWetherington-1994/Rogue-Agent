@@ -1,0 +1,301 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HUSKY: "0"
+  GHIDRA_VERSION: "12.1.4"
+  GHIDRA_TAG: "Ghidra_12.1.4_build"
+  SQLITE_URL: "https://www.sqlite.org/2026/sqlite-amalgamation-3540000.zip"
+  SQLITE_SHA256: "68e913b0fe8ec6b4e5f391c594a28872884e80d6cd042a1e50c957be46b5aa4d"
+  # Engine revision the fork started from; the benchmark measures against it.
+  UPSTREAM_REPOSITORY: "https://github.com/morluto/rea.git"
+  UPSTREAM_REVISION: "2895a18ca92f415ae62f87167ba9c7a672e3b7dc"
+
+jobs:
+  checks:
+    name: Typecheck, lint and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run test:fast
+      - run: npm run build
+      - name: Desktop server smoke test
+        run: |
+          node scripts/rogue-agent-desktop.mjs --port 0 --exit-with-stdin > ready.txt &
+          for i in $(seq 1 50); do grep -q ROGUE_AGENT_READY ready.txt && break; sleep 0.2; done
+          ready=$(sed -n 's/^ROGUE_AGENT_READY //p' ready.txt)
+          port=$(node -e "console.log(JSON.parse(process.argv[1]).port)" "$ready")
+          token=$(node -e "console.log(JSON.parse(process.argv[1]).token)" "$ready")
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$port/api/state)" = 401
+          curl -fsS -H "x-rogue-token: $token" http://127.0.0.1:$port/api/state
+          curl -fsS -H "x-rogue-token: $token" -H 'content-type: application/json' -d '{}' http://127.0.0.1:$port/api/shutdown
+
+  package:
+    name: Build Windows package
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install MinGW-w64
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y g++-mingw-w64-x86-64
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/launcher/target
+          key: launcher-${{ hashFiles('desktop/launcher/Cargo.lock') }}
+      - run: npm ci
+      - run: npm run build
+      - run: npm run build:windows-native
+      - name: Build RogueAgent.exe
+        working-directory: desktop/launcher
+        run: cargo build --release --target x86_64-pc-windows-gnu --locked
+      - run: node scripts/desktop/package-windows.mjs --zip
+      - name: Build benchmark target (SQLite shell for Windows)
+        run: |
+          curl -fsSL "$SQLITE_URL" -o sqlite.zip
+          echo "$SQLITE_SHA256  sqlite.zip" | sha256sum -c -
+          python3 -c "import zipfile; zipfile.ZipFile('sqlite.zip').extractall('sqlite')"
+          src=$(ls -d sqlite/sqlite-amalgamation-*)
+          mkdir -p bench
+          x86_64-w64-mingw32-gcc -O2 -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION "$src/sqlite3.c" "$src/shell.c" -o bench/sqlite3.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rogue-agent-win-x64
+          path: out/RogueAgent-win-x64/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rogue-agent-zip
+          path: |
+            out/RogueAgent-*-win-x64.zip
+            out/RogueAgent-*-win-x64.zip.sha256
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-native
+          path: native/windows/build/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-target
+          path: bench/sqlite3.exe
+          if-no-files-found: error
+
+  windows-installer:
+    name: Windows smoke test and installer
+    needs: package
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: rogue-agent-win-x64
+          path: out/RogueAgent-win-x64
+      - name: Packaged runtime serves the API
+        shell: pwsh
+        run: |
+          $app = "out/RogueAgent-win-x64"
+          & "$app/runtime/node.exe" --version
+          & "$app/rea.cmd" --version
+          if ($LASTEXITCODE -ne 0) { throw "rea.cmd failed" }
+          $psi = New-Object System.Diagnostics.ProcessStartInfo "$app/runtime/node.exe"
+          $psi.Arguments = "`"$app/app/scripts/rogue-agent-desktop.mjs`" --port 0 --exit-with-stdin"
+          $psi.RedirectStandardOutput = $true; $psi.RedirectStandardInput = $true; $psi.UseShellExecute = $false
+          $server = [System.Diagnostics.Process]::Start($psi)
+          $line = $server.StandardOutput.ReadLine()
+          if (-not $line.StartsWith("ROGUE_AGENT_READY ")) { throw "unexpected: $line" }
+          $ready = $line.Substring(18) | ConvertFrom-Json
+          $headers = @{ "x-rogue-token" = $ready.token }
+          Invoke-RestMethod -Headers $headers "http://127.0.0.1:$($ready.port)/api/environment" | ConvertTo-Json -Depth 4
+          Invoke-RestMethod -Method Post -Headers $headers -ContentType "application/json" -Body "{}" "http://127.0.0.1:$($ready.port)/api/shutdown"
+          if (-not $server.WaitForExit(30000)) { $server.Kill(); throw "server did not exit" }
+      - name: Native window starts WebView2 and the engine
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $marker = Join-Path $env:RUNNER_TEMP "smoke.txt"
+          $exe = Resolve-Path "out/RogueAgent-win-x64/RogueAgent.exe"
+          $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test", "`"$marker`"" -PassThru
+          if (-not $process.WaitForExit(120000)) { $process.Kill(); throw "window did not finish the smoke test" }
+          Get-Content "$env:LOCALAPPDATA/RogueAgent/logs/launcher.log" -ErrorAction SilentlyContinue
+          if (-not (Select-String -Path $marker -Pattern "SMOKE_OK" -Quiet)) { throw "smoke marker missing" }
+          Get-Content $marker
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y; }
+          & $iscc "/DAppVersion=$version" "/DSourceDir=$(Resolve-Path out/RogueAgent-win-x64)" "/O$(Resolve-Path out)" desktop/packaging/RogueAgent.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+      - name: Installer installs and uninstalls silently
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem out/RogueAgent-*-Setup-x64.exe | Select-Object -First 1
+          $dir = Join-Path $env:RUNNER_TEMP "RogueAgentInstall"
+          Start-Process $setup.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/DIR=`"$dir`"" -Wait
+          if (-not (Test-Path "$dir/RogueAgent.exe")) { throw "installer did not install RogueAgent.exe" }
+          Start-Process "$dir/unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES" -Wait
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rogue-agent-installer
+          path: out/RogueAgent-*-Setup-x64.exe
+          if-no-files-found: error
+
+  ghidra-linux:
+    name: Real Ghidra on Linux (bridge correctness + benchmark)
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/cache@v4
+        id: ghidra
+        with:
+          path: ${{ runner.temp }}/ghidra
+          key: ghidra-${{ env.GHIDRA_VERSION }}-v1
+      - name: Download Ghidra
+        if: steps.ghidra.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          url=$(gh api "repos/NationalSecurityAgency/ghidra/releases/tags/$GHIDRA_TAG" --jq '.assets[] | select(.name | endswith(".zip")) | .browser_download_url' | head -1)
+          curl -fsSL "$url" -o "$RUNNER_TEMP/ghidra.zip"
+          python3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$RUNNER_TEMP/ghidra.zip" "$RUNNER_TEMP/ghidra"
+          chmod -R u+x "$RUNNER_TEMP"/ghidra/*/support "$RUNNER_TEMP"/ghidra/*/Ghidra/Features/Decompiler/os
+      - name: Locate Ghidra
+        run: echo "GHIDRA_INSTALL_DIR=$(ls -d "$RUNNER_TEMP"/ghidra/ghidra_*)" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: benchmark-target
+          path: bench
+      - run: npm ci
+      - run: npm run build
+      - name: Real Ghidra verification (all bridge operations)
+        run: node scripts/verify-real-ghidra.mjs
+      - name: Benchmark this engine
+        run: node scripts/desktop/benchmark-ghidra.mjs --target bench/sqlite3.exe --label "Rogue Agent" --out bench/fork.json
+      - name: Benchmark upstream engine
+        run: |
+          git clone --filter=blob:none "$UPSTREAM_REPOSITORY" upstream
+          git -C upstream checkout --detach "$UPSTREAM_REVISION"
+          (cd upstream && npm ci --no-audit --no-fund && npm run build)
+          node scripts/desktop/benchmark-ghidra.mjs --engine upstream --target bench/sqlite3.exe --label "upstream rea" --out bench/upstream.json
+      - name: Compare
+        run: node scripts/desktop/compare-benchmarks.mjs bench/upstream.json bench/fork.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-linux
+          path: bench/*.json
+
+  ghidra-windows:
+    name: Real Ghidra on Windows (packaged app E2E + benchmark)
+    needs: package
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/cache@v4
+        id: ghidra
+        with:
+          path: ${{ runner.temp }}/ghidra
+          key: ghidra-${{ env.GHIDRA_VERSION }}-windows-v1
+      - name: Download Ghidra
+        if: steps.ghidra.outputs.cache-hit != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $url = gh api "repos/NationalSecurityAgency/ghidra/releases/tags/$env:GHIDRA_TAG" --jq '.assets[] | select(.name | endswith(".zip")) | .browser_download_url' | Select-Object -First 1
+          curl.exe -fsSL $url -o "$env:RUNNER_TEMP/ghidra.zip"
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/ghidra" | Out-Null
+          tar -xf "$env:RUNNER_TEMP/ghidra.zip" -C "$env:RUNNER_TEMP/ghidra"
+      - name: Locate Ghidra
+        shell: pwsh
+        run: |
+          $dir = (Get-ChildItem "$env:RUNNER_TEMP/ghidra" -Directory -Filter "ghidra_*" | Select-Object -First 1).FullName
+          "GHIDRA_INSTALL_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - uses: actions/download-artifact@v4
+        with:
+          name: rogue-agent-win-x64
+          path: out/RogueAgent-win-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-native
+          path: native/windows/build
+      - uses: actions/download-artifact@v4
+        with:
+          name: benchmark-target
+          path: bench
+      - name: Packaged app end to end (open, analyze, decompile)
+        run: node scripts/desktop/e2e-desktop.mjs --package out/RogueAgent-win-x64 --target bench/sqlite3.exe --ghidra "$env:GHIDRA_INSTALL_DIR" --java "$env:JAVA_HOME"
+      - run: npm ci
+      - run: npm run build
+      - name: Benchmark this engine
+        run: node scripts/desktop/benchmark-ghidra.mjs --target bench/sqlite3.exe --label "Rogue Agent" --out bench/fork.json
+      - name: Benchmark upstream engine
+        shell: pwsh
+        run: |
+          git clone --filter=blob:none $env:UPSTREAM_REPOSITORY upstream
+          git -C upstream checkout --detach $env:UPSTREAM_REVISION
+          Push-Location upstream; npm ci --no-audit --no-fund; npm run build; Pop-Location
+          New-Item -ItemType Directory -Force upstream/native/windows/build | Out-Null
+          Copy-Item native/windows/build/* upstream/native/windows/build/
+          node scripts/desktop/benchmark-ghidra.mjs --engine upstream --target bench/sqlite3.exe --label "upstream rea" --out bench/upstream.json
+      - name: Compare
+        shell: pwsh
+        run: node scripts/desktop/compare-benchmarks.mjs bench/upstream.json bench/fork.json | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-windows
+          path: bench/*.json

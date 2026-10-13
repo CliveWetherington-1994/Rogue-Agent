@@ -176,9 +176,10 @@ button:focus-visible,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--muted);
-  direction: rtl;
-  text-align: left;
+}
+
+.target strong {
+  font-weight: 600;
 }
 
 .pill {

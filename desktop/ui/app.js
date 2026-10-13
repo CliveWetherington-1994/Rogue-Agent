@@ -149,7 +149,13 @@ function renderServerState(state) {
           ? "pill-idle"
           : "pill-busy"
   }`;
-  $("target").textContent = state.target?.path ?? "No file open";
+  const path = state.target?.path;
+  if (path === undefined) $("target").textContent = "No file open";
+  else {
+    const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+    $("target").innerHTML =
+      `<strong>${escapeHtml(path.slice(cut + 1))}</strong> <span class="muted">${escapeHtml(cut > 0 ? path.slice(0, cut) : "")}</span>`;
+  }
   $("target").title = state.target
     ? `${state.target.path}\nsha256 ${state.target.sha256}\n${state.target.format} ${state.target.architecture ?? ""}`
     : "";
@@ -819,6 +825,17 @@ document.addEventListener("keydown", (event) => {
 });
 
 // ---------------------------------------------------------------- start
+
+void api("/api/environment")
+  .then((environment) => {
+    ui.environment ??= environment;
+    $("engine").textContent = `v${environment.version}`;
+    if (native)
+      window.ipc.postMessage(
+        JSON.stringify({ type: "loaded", version: environment.version }),
+      );
+  })
+  .catch(() => undefined);
 
 const events = new EventSource(
   `/api/events?token=${encodeURIComponent(token)}`,
