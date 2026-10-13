@@ -7,6 +7,11 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
+    inputs:
+      export_ghidra:
+        description: Upload the Ghidra release used by CI as an artifact (for local debugging)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -208,6 +213,13 @@ jobs:
           chmod -R u+x "$RUNNER_TEMP"/ghidra/*/support "$RUNNER_TEMP"/ghidra/*/Ghidra/Features/Decompiler/os
       - name: Locate Ghidra
         run: echo "GHIDRA_INSTALL_DIR=$(ls -d "$RUNNER_TEMP"/ghidra/ghidra_*)" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.export_ghidra }}
+        with:
+          name: ghidra-${{ env.GHIDRA_VERSION }}
+          path: ${{ runner.temp }}/ghidra/
+          retention-days: 1
+          compression-level: 1
       - uses: actions/download-artifact@v4
         with:
           name: benchmark-target
