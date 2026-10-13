@@ -50,6 +50,19 @@ const environmentSchema = z.object({
   REA_GHIDRA_LANGUAGE_ID: ghidraLanguageIdSchema.optional(),
   REA_GHIDRA_COMPILER_SPEC_ID: ghidraCompilerSpecIdSchema.optional(),
   REA_GHIDRA_DISABLED_ANALYZERS: ghidraDisabledAnalyzersSchema.optional(),
+  /** Reuse analyzed Programs across sessions for the same target and profile. */
+  REA_GHIDRA_ANALYSIS_CACHE: z.enum(["on", "off"]).default("on"),
+  REA_GHIDRA_ANALYSIS_CACHE_DIR: z
+    .string()
+    .min(1)
+    .refine(isAbsolute, "REA_GHIDRA_ANALYSIS_CACHE_DIR must be absolute")
+    .optional(),
+  REA_GHIDRA_ANALYSIS_CACHE_MAX_MB: z.coerce
+    .number()
+    .int()
+    .min(64)
+    .max(1_048_576)
+    .optional(),
   /** Coalesce queued pseudocode requests into parallel decompile windows. */
   REA_GHIDRA_PARALLEL_DECOMPILE: z.enum(["on", "off"]).default("on"),
   /** Seconds before one Ghidra decompilation is abandoned; 0 waits forever. */

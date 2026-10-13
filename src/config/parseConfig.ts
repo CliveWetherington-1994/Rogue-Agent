@@ -94,6 +94,15 @@ export const parseConfig = (
     ...(env.REA_GHIDRA_NATIVEAOT_JAR === undefined
       ? {}
       : { ghidraNativeAotJar: env.REA_GHIDRA_NATIVEAOT_JAR }),
+    ghidraAnalysisCache: {
+      enabled: env.REA_GHIDRA_ANALYSIS_CACHE === "on",
+      ...(env.REA_GHIDRA_ANALYSIS_CACHE_DIR === undefined
+        ? {}
+        : { directory: env.REA_GHIDRA_ANALYSIS_CACHE_DIR }),
+      ...(env.REA_GHIDRA_ANALYSIS_CACHE_MAX_MB === undefined
+        ? {}
+        : { maxMegabytes: env.REA_GHIDRA_ANALYSIS_CACHE_MAX_MB }),
+    },
     ...(env.REA_GHIDRA_PARALLEL_DECOMPILE === "off"
       ? { ghidraParallelDecompile: false }
       : {}),

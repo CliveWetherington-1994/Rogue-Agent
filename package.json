@@ -57,6 +57,7 @@
     "bridge/ghidra/ReaGhidraNoReturnFix.java",
     "bridge/ghidra/ReaGhidraMipsSoftFloat.java",
     "bridge/ghidra/ReaGhidraPrepareRaw.java",
+    "bridge/ghidra/ReaGhidraSaveAnalysis.java",
     "bridge/android/ReaJadxBridge.java",
     "bridge/mitmproxy/capture.py",
     "scripts/rea.mjs",

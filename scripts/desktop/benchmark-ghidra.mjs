@@ -175,6 +175,43 @@ try {
   report.closeMs = now() - started;
 }
 
+// 5. Second open of the same binary in a fresh session: a full re-analysis
+// without a cross-session cache, an import of the stored analysis with one.
+if (report.batch !== undefined) {
+  const reopened = createBinarySession(config.value, silentLogger, environment);
+  try {
+    let started = now();
+    const opened = await reopened.open(resolve(values.target), {
+      providerId: "ghidra",
+    });
+    if (!opened.ok)
+      throw new Error(errors.projectAnalysisError(opened.error).message);
+    const result = await reopened.execute("list_documents", {});
+    if (!result.ok)
+      throw new Error(errors.projectAnalysisError(result.error).message);
+    report.reopenStartupMs = now() - started;
+    const [document] = result.value.result;
+    const check = Object.keys(report.digests).slice(0, 8);
+    started = now();
+    let mismatches = 0;
+    for (const address of check) {
+      const code = await reopened.execute("procedure_pseudo_code", {
+        document,
+        procedure: address,
+      });
+      const value = code.ok ? digest(code.value.result) : "error";
+      if (value !== report.digests[address]) mismatches++;
+    }
+    report.reopen = {
+      checkedFunctions: check.length,
+      mismatches,
+      decompileMs: now() - started,
+    };
+  } finally {
+    await reopened.close();
+  }
+}
+
 const rounded = JSON.parse(
   JSON.stringify(report, (key, value) =>
     typeof value === "number" && !Number.isInteger(value)

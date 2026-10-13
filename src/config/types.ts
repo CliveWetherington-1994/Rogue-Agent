@@ -17,6 +17,12 @@ export interface AppConfig {
   readonly ghidraDisabledAnalyzers?: readonly string[];
   readonly ghidraSeedFile?: string;
   readonly ghidraNativeAotJar?: string;
+  /** Stored analyses reused across sessions; absent behaves as disabled. */
+  readonly ghidraAnalysisCache?: {
+    readonly enabled: boolean;
+    readonly directory?: string;
+    readonly maxMegabytes?: number;
+  };
   /** False disables coalescing queued pseudocode into parallel windows. */
   readonly ghidraParallelDecompile?: false;
   /** Per-function decompile deadline in seconds; absent or 0 waits forever. */

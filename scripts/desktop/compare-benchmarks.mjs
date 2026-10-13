@@ -23,6 +23,7 @@ const speedup = (base, value) =>
 
 const rows = [
   ["Startup + auto-analysis", (r) => r.startupAndAnalysisMs, seconds],
+  ["Reopen same binary (new session)", (r) => r.reopenStartupMs, seconds],
   ["List functions", (r) => r.listProceduresMs, millis],
   ["Batch decompile (all at once)", (r) => r.batch?.ms, seconds],
   ["  per function", (r) => r.batch?.perFunctionMs, millis],
@@ -47,6 +48,7 @@ const lines = [
   ),
 ];
 let mismatches = 0;
+for (const report of reports) mismatches += report.reopen?.mismatches ?? 0;
 for (const report of reports.slice(1)) {
   for (const [address, value] of Object.entries(baseline.digests ?? {})) {
     if (report.digests?.[address] !== value) mismatches++;

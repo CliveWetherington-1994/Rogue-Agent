@@ -70,6 +70,7 @@ import {
 import { ghidraRiscvLimitations } from "./GhidraRiscvProfile.js";
 import { unverifiedGhidraBuildLimitation } from "./GhidraInstallationPolicy.js";
 import { GhidraHeadlessLauncher } from "./GhidraLauncher.js";
+import { ghidraAnalysisCacheSettings } from "./GhidraAnalysisCache.js";
 import { attestGhidraNativeLoadImage } from "./GhidraLoadImageAttest.js";
 import {
   NATIVE_AOT_MAX_REPORT_BYTES,
@@ -614,6 +615,7 @@ export const createGhidraProviderClient = (input: {
       ...(config.ghidraDecompileTimeoutSeconds === undefined
         ? {}
         : { decompileTimeoutSeconds: config.ghidraDecompileTimeoutSeconds }),
+      ...ghidraLaunchCache(config, input.environment, installation.platform),
       ...(seeds === undefined ? {} : { analysisSeeds: seeds }),
       platform: installation.platform,
       ...(extensions.length === 0 ? {} : { analysisExtensions: extensions }),
@@ -1114,4 +1116,20 @@ const projectPrimarySessionError = (
       context,
     );
   return new ProviderAdapterError("ghidra", operation, context);
+};
+
+/** Launcher option for the cross-session analysis cache, when enabled. */
+const ghidraLaunchCache = (
+  config: AppConfig,
+  environment: Readonly<NodeJS.ProcessEnv>,
+  platform: NodeJS.Platform,
+) => {
+  const settings = ghidraAnalysisCacheSettings({
+    enabled: config.ghidraAnalysisCache?.enabled === true,
+    directory: config.ghidraAnalysisCache?.directory,
+    maxMegabytes: config.ghidraAnalysisCache?.maxMegabytes,
+    environment,
+    platform,
+  });
+  return settings === undefined ? {} : { analysisCache: settings };
 };

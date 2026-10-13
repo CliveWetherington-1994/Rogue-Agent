@@ -764,6 +764,26 @@ function that exceeds it fails with `decompile_failed` and the session keeps
 serving other requests instead of blocking until cancellation restarts it.
 The Rogue Agent desktop app sets 120 seconds by default.
 
+### Ghidra analysis cache
+
+The first session for a target stores the analyzed Program (after import,
+pre-analysis options, seeds, auto-analysis and the post-analysis repairs, and
+before the bridge serves it) as a packed Ghidra database. A later session for
+the same target bytes, analysis profile, import options, Ghidra installation
+and bridge scripts imports that database with `-noanalysis`, so reopening a
+binary skips import and auto-analysis. Edits made during a session are never
+stored. Each entry's SHA-256 is checked against its manifest before reuse; a
+mismatched entry is deleted and the target is analyzed again.
+
+| Setting                            | Default                                                                                                                | Effect                                                     |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `REA_GHIDRA_ANALYSIS_CACHE`        | `on`                                                                                                                   | `off` analyzes every session from scratch                  |
+| `REA_GHIDRA_ANALYSIS_CACHE_DIR`    | `%LOCALAPPDATA%\rea\ghidra-analysis`, `~/Library/Caches/rea/ghidra-analysis`, or `$XDG_CACHE_HOME/rea/ghidra-analysis` | Absolute cache directory                                   |
+| `REA_GHIDRA_ANALYSIS_CACHE_MAX_MB` | `4096`                                                                                                                 | Size budget; least recently used entries are removed first |
+
+Storing adds the time to pack the database to the first session only. Delete
+the directory at any time to reclaim space.
+
 Verify controls at their consumer after the first Ghidra-backed query starts
 the JVM: inspect that owned JVM's effective `-Xmx` and GC/compiler flags, CPU
 affinity, and observed memory use. Do not infer them from the parent shell's
