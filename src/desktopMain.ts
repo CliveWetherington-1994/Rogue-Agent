@@ -56,9 +56,11 @@ export const runDesktop = async (argv: readonly string[]): Promise<number> => {
       level: level.ok ? level.value : "info",
       base: { application: "rogue-agent" },
     },
+    // Synchronous: the log is low-volume, and an asynchronous file is not
+    // ready if shutdown arrives right after startup (pino then throws).
     pino.destination({
       dest: join(configDirectory, "desktop.log"),
-      sync: false,
+      sync: true,
       mkdir: true,
     }),
   );

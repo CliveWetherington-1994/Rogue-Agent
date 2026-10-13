@@ -145,14 +145,19 @@ try {
 } finally {
   await api("/api/shutdown", {}).catch(() => undefined);
   child.stdin.end();
-  const exited = await Promise.race([
-    new Promise((done) => child.once("exit", () => done(true))),
-    new Promise((done) => setTimeout(() => done(false), 30_000)),
+  const exitCode = await Promise.race([
+    child.exitCode === null
+      ? new Promise((done) => child.once("exit", (code) => done(code)))
+      : Promise.resolve(child.exitCode),
+    new Promise((done) => setTimeout(() => done(undefined), 30_000)),
   ]);
-  if (!exited) {
+  if (exitCode === undefined) {
     child.kill();
     process.stderr.write("server did not exit after shutdown\n");
     failed = true;
-  } else step("server shut down");
+  } else if (exitCode !== 0) {
+    process.stderr.write(`server exited with code ${exitCode}\n`);
+    failed = true;
+  } else step("server shut down cleanly");
 }
 process.exitCode = failed ? 1 : 0;
