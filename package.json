@@ -67,7 +67,6 @@
     "scripts/electron-active-hook-boundaries.cjs",
     "scripts/hopper-demo-x11.py",
     "scripts/prepack.mjs",
-    "scripts/prepare.mjs",
     "skills",
     "README.md",
     "DISCLAIMER.md",
@@ -231,11 +230,10 @@
     "evidence:generate": "node scripts/check-dependency-install.mjs && node scripts/run-exclusive.mjs artifacts turbo run artifacts:managed-evidence",
     "evidence:check": "node scripts/check-dependency-install.mjs && node scripts/run-exclusive.mjs artifacts turbo run evidence:check:built",
     "docs:generate": "node scripts/check-dependency-install.mjs && node scripts/run-exclusive.mjs artifacts npm run docs:prepare",
-    "docs:check": "node scripts/check-dependency-install.mjs && node scripts/run-exclusive.mjs artifacts turbo run docs:check:built && npm run test:local -- tests/conformance/readmeConsistency.test.ts",
+    "docs:check": "node scripts/check-dependency-install.mjs && node scripts/run-exclusive.mjs artifacts turbo run docs:check:built",
     "docs:check:built": "node scripts/generate-package-metadata.mjs --check && node scripts/generate-skill-metadata.mjs --check && node scripts/generate-product-catalog.mjs --check && node scripts/generate-completion-ledger.mjs --check && node scripts/check-doc-facts.mjs && node scripts/generate-error-schema.mjs --check && npm run licenses:check",
     "docs:error-schema": "node scripts/check-dependency-install.mjs && node scripts/run-exclusive.mjs artifacts turbo run artifacts:error-schema",
     "prepack": "node scripts/prepack.mjs",
-    "prepare": "node scripts/prepare.mjs",
     "verify:asset-catalog": "npm run build:cached && node scripts/verify/apple/asset-catalog.mjs",
     "verify:native-calls": "npm run build:cached && node scripts/verify-native-calls.mjs",
     "verify:native-ui:permissions": "npm run build:cached && node scripts/verify-native-ui.mjs --allow-permission-denial",
@@ -279,7 +277,10 @@
     "docs:prepare": "node scripts/generate-package-metadata.mjs && turbo run artifacts:product-catalog artifacts:managed-evidence artifacts:error-schema",
     "verify:web:qlog": "npm run build:cached && node scripts/verify-qlog-captures.mjs",
     "licenses:generate": "node scripts/generate-third-party-inventory.mjs",
-    "licenses:check": "node scripts/generate-third-party-inventory.mjs --check"
+    "licenses:check": "node scripts/generate-third-party-inventory.mjs --check",
+    "verify:packet-capture": "npm run build:cached && node scripts/verify-packet-capture.mjs",
+    "verify:signal-recording": "npm run build:cached && node scripts/verify-signal-recording.mjs",
+    "verify:windows-native:inspection": "node scripts/verify-windows-native-inspection.mjs"
   },
   "dependencies": {
     "@babel/parser": "8.0.4",

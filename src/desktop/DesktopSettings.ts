@@ -9,7 +9,6 @@ export const DESKTOP_APPLICATION_DIRECTORY = "RogueAgent";
 
 /** Provider the desktop app binds a target to. */
 export const desktopProviderSchema = z.enum(["ghidra", "ida"]);
-export type DesktopProvider = z.infer<typeof desktopProviderSchema>;
 
 const absolutePath = z
   .string()

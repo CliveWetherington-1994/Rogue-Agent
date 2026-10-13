@@ -13,7 +13,7 @@
     "tests/processOwnershipRunner.ts"
   ],
   "project": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.mjs"],
-  "ignoreBinaries": ["mkfifo"],
+  "ignoreBinaries": ["mkfifo", "zenity"],
   "ignoreDependencies": ["electron", "esbuild", "webpack"],
   "ignoreExportsUsedInFile": true,
   "rules": {
