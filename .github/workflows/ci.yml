@@ -41,8 +41,9 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run format:check
-      - run: npm run test:fast
+      # Some conformance tests read the compiled contracts in dist/.
       - run: npm run build
+      - run: npm run test:fast
       - name: Desktop server smoke test
         run: |
           node scripts/rogue-agent-desktop.mjs --port 0 --exit-with-stdin > ready.txt &
