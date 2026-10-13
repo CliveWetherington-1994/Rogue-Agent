@@ -30,8 +30,7 @@
         "tsconfig.json",
         "tsconfig.build.json",
         "vitest.config.ts",
-        "scripts/**/*.d.mts",
-        "docs/.vitepress/config.ts"
+        "scripts/**/*.d.mts"
       ],
       "outputs": []
     },
@@ -57,12 +56,6 @@
         "src/**/*.{cjs,cts,js,jsx,mjs,mts,ts,tsx}",
         "tests/**/*.{cjs,cts,js,jsx,mjs,mts,ts,tsx}",
         "docs/**/*.{cjs,cts,js,jsx,mjs,mts,ts,tsx}",
-        "website/**/*.{cjs,cts,js,jsx,mjs,mts,ts,tsx}",
-        "experiments/**/*.{cjs,cts,js,jsx,mjs,mts,ts,tsx}",
-        "!docs/.vitepress/cache/**",
-        "!docs/.vitepress/dist/**",
-        "!website/_site/**",
-        "!experiments/analysis-efficiency/results/**",
         "vitest.config.ts"
       ]
     },
@@ -79,12 +72,6 @@
         "src/**/*.{cjs,cts,js,jsx,mjs,mts,ts,tsx}",
         "tests/**/*.{cjs,cts,js,jsx,mjs,mts,ts,tsx}",
         "docs/**/*.{cjs,cts,js,jsx,mjs,mts,ts,tsx}",
-        "website/**/*.{cjs,cts,js,jsx,mjs,mts,ts,tsx}",
-        "experiments/**/*.{cjs,cts,js,jsx,mjs,mts,ts,tsx}",
-        "!docs/.vitepress/cache/**",
-        "!docs/.vitepress/dist/**",
-        "!website/_site/**",
-        "!experiments/analysis-efficiency/results/**",
         "vitest.config.ts"
       ]
     },

@@ -22,8 +22,7 @@
   "include": [
     "src/**/*.ts",
     "tests/**/*.ts",
-    "vitest.config.ts",
-    "docs/.vitepress/config.ts"
+    "vitest.config.ts"
   ],
   "exclude": ["dist", "node_modules"]
 }
