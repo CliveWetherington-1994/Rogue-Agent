@@ -168,7 +168,9 @@ export class GhidraClient {
         this.#wire.request(method, parameters, requestOptions),
       (kind, message, cause) => this.#failure(kind, message, cause),
       () => this.#stopAfterActiveCancellation(),
-      createGhidraPseudocodePrefetchPlanner(),
+      options.parallelDecompile === false
+        ? undefined
+        : createGhidraPseudocodePrefetchPlanner(),
     );
   }
 

@@ -94,6 +94,9 @@ export const parseConfig = (
     ...(env.REA_GHIDRA_NATIVEAOT_JAR === undefined
       ? {}
       : { ghidraNativeAotJar: env.REA_GHIDRA_NATIVEAOT_JAR }),
+    ...(env.REA_GHIDRA_PARALLEL_DECOMPILE === "off"
+      ? { ghidraParallelDecompile: false }
+      : {}),
     ...(env.REA_GHIDRA_DECOMPILE_TIMEOUT_SECONDS === undefined
       ? {}
       : {

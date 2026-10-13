@@ -50,6 +50,8 @@ const environmentSchema = z.object({
   REA_GHIDRA_LANGUAGE_ID: ghidraLanguageIdSchema.optional(),
   REA_GHIDRA_COMPILER_SPEC_ID: ghidraCompilerSpecIdSchema.optional(),
   REA_GHIDRA_DISABLED_ANALYZERS: ghidraDisabledAnalyzersSchema.optional(),
+  /** Coalesce queued pseudocode requests into parallel decompile windows. */
+  REA_GHIDRA_PARALLEL_DECOMPILE: z.enum(["on", "off"]).default("on"),
   /** Seconds before one Ghidra decompilation is abandoned; 0 waits forever. */
   REA_GHIDRA_DECOMPILE_TIMEOUT_SECONDS: z.coerce
     .number()

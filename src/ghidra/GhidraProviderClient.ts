@@ -576,6 +576,9 @@ export const createGhidraProviderClient = (input: {
         : [];
   const client = clientFactory({
     startupTimeoutMs: config.ghidraStartupTimeoutMs,
+    ...(config.ghidraParallelDecompile === false
+      ? { parallelDecompile: false }
+      : {}),
     platform: installation.platform,
     launcher: new GhidraHeadlessLauncher({
       environment: input.environment,

@@ -17,6 +17,8 @@ export interface AppConfig {
   readonly ghidraDisabledAnalyzers?: readonly string[];
   readonly ghidraSeedFile?: string;
   readonly ghidraNativeAotJar?: string;
+  /** False disables coalescing queued pseudocode into parallel windows. */
+  readonly ghidraParallelDecompile?: false;
   /** Per-function decompile deadline in seconds; absent or 0 waits forever. */
   readonly ghidraDecompileTimeoutSeconds?: number;
   readonly ilspyCmdPath: string | undefined;
