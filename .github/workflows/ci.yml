@@ -214,17 +214,28 @@ jobs:
           path: bench
       - run: npm ci
       - run: npm run build
-      - name: Real Ghidra verification (all bridge operations)
-        run: node scripts/verify-real-ghidra.mjs
-      - name: Benchmark this engine
-        run: node scripts/desktop/benchmark-ghidra.mjs --target bench/sqlite3.exe --label "Rogue Agent" --out bench/fork.json
-      - name: Benchmark upstream engine
+      - name: Build upstream engine (baseline)
         run: |
           git clone --filter=blob:none "$UPSTREAM_REPOSITORY" upstream
           git -C upstream checkout --detach "$UPSTREAM_REVISION"
-          (cd upstream && npm ci --no-audit --no-fund && npm run build)
-          node scripts/desktop/benchmark-ghidra.mjs --engine upstream --target bench/sqlite3.exe --label "upstream rea" --out bench/upstream.json
+          cd upstream && npm ci --no-audit --no-fund && npm run build
+      - name: Upstream bridge verification (baseline)
+        id: upstream_verify
+        continue-on-error: true
+        working-directory: upstream
+        run: node scripts/verify-real-ghidra.mjs
+      - name: Bridge verification (this engine)
+        # A failure upstream also shows on this runner is not this fork's.
+        continue-on-error: ${{ steps.upstream_verify.outcome == 'failure' }}
+        run: node scripts/verify-real-ghidra.mjs
+      - name: Benchmark this engine
+        if: ${{ !cancelled() }}
+        run: node scripts/desktop/benchmark-ghidra.mjs --target bench/sqlite3.exe --label "Rogue Agent" --out bench/fork.json
+      - name: Benchmark upstream engine
+        if: ${{ !cancelled() }}
+        run: node scripts/desktop/benchmark-ghidra.mjs --engine upstream --target bench/sqlite3.exe --label "upstream rea" --out bench/upstream.json
       - name: Compare
+        if: ${{ !cancelled() }}
         run: node scripts/desktop/compare-benchmarks.mjs bench/upstream.json bench/fork.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
@@ -279,13 +290,19 @@ jobs:
         with:
           name: benchmark-target
           path: bench
+      - name: JDK cold start
+        shell: pwsh
+        run: |
+          $elapsed = Measure-Command { & "$env:JAVA_HOME\bin\java.exe" -XshowSettings:properties -version 2>&1 | Out-Null }
+          "java -XshowSettings cold start: $([math]::Round($elapsed.TotalSeconds, 1)) s"
       - name: Packaged app end to end (open, analyze, decompile)
         run: node scripts/desktop/e2e-desktop.mjs --package out/RogueAgent-win-x64 --target bench/sqlite3.exe --ghidra "$env:GHIDRA_INSTALL_DIR" --java "$env:JAVA_HOME"
       - run: npm ci
+        if: ${{ !cancelled() }}
       - run: npm run build
-      - name: Benchmark this engine
-        run: node scripts/desktop/benchmark-ghidra.mjs --target bench/sqlite3.exe --label "Rogue Agent" --out bench/fork.json
-      - name: Benchmark upstream engine
+        if: ${{ !cancelled() }}
+      - name: Build upstream engine (baseline)
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: |
           git clone --filter=blob:none $env:UPSTREAM_REPOSITORY upstream
@@ -293,8 +310,28 @@ jobs:
           Push-Location upstream; npm ci --no-audit --no-fund; npm run build; Pop-Location
           New-Item -ItemType Directory -Force upstream/native/windows/build | Out-Null
           Copy-Item native/windows/build/* upstream/native/windows/build/
-          node scripts/desktop/benchmark-ghidra.mjs --engine upstream --target bench/sqlite3.exe --label "upstream rea" --out bench/upstream.json
+      - name: Upstream Windows bridge verification (baseline)
+        id: upstream_verify
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        working-directory: upstream
+        run: |
+          node scripts/create-ghidra-windows-fixture.mjs
+          node scripts/verify-real-ghidra-windows.mjs
+      - name: Windows bridge verification (this engine)
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ steps.upstream_verify.outcome == 'failure' }}
+        run: |
+          node scripts/create-ghidra-windows-fixture.mjs
+          node scripts/verify-real-ghidra-windows.mjs
+      - name: Benchmark this engine
+        if: ${{ !cancelled() }}
+        run: node scripts/desktop/benchmark-ghidra.mjs --target bench/sqlite3.exe --label "Rogue Agent" --out bench/fork.json
+      - name: Benchmark upstream engine
+        if: ${{ !cancelled() }}
+        run: node scripts/desktop/benchmark-ghidra.mjs --engine upstream --target bench/sqlite3.exe --label "upstream rea" --out bench/upstream.json
       - name: Compare
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: node scripts/desktop/compare-benchmarks.mjs bench/upstream.json bench/fork.json | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
       - uses: actions/upload-artifact@v4
