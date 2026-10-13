@@ -1,6 +1,7 @@
 import type { JsonValue } from "../domain/jsonValue.js";
 import { err, type Result } from "../domain/result.js";
 import type { GhidraRequestOptions } from "./GhidraClientTypes.js";
+import type { GhidraRequestPlanner } from "./GhidraPrefetchPlanner.js";
 import type {
   GhidraSessionError,
   GhidraSessionFailureKind,
@@ -42,6 +43,7 @@ export class GhidraRequestQueue {
     private readonly execute: GhidraRequestExecutor,
     private readonly failure: GhidraQueueFailureFactory,
     private readonly onActiveCancellation: GhidraActiveCancellationHandler,
+    private readonly planner?: GhidraRequestPlanner,
   ) {}
 
   /** Queue one request until it completes, is cancelled, or the session closes. */
@@ -92,6 +94,7 @@ export class GhidraRequestQueue {
   /** Admit requests after the owning client completes a new session startup. */
   reopen(): void {
     this.#closedFailure = undefined;
+    this.planner?.reset();
   }
 
   #drain(): void {
@@ -124,11 +127,24 @@ export class GhidraRequestQueue {
           };
     if (onAbort !== undefined)
       entry.signal?.addEventListener("abort", onAbort, { once: true });
-    void this.execute(
-      entry.method,
-      entry.parameters,
-      entry.signal === undefined ? {} : { signal: entry.signal },
-    )
+    const requestOptions =
+      entry.signal === undefined ? {} : { signal: entry.signal };
+    const ahead = this.planner?.plan(
+      entry,
+      this.#queue.filter((queued) => queued.signal?.aborted !== true),
+    );
+    const runHead = (): Promise<GhidraQueuedRequestResult> =>
+      this.execute(entry.method, entry.parameters, requestOptions);
+    // A planned request is advisory: whatever it returns, the head still runs
+    // and alone settles the caller's result.
+    const execution =
+      ahead === undefined
+        ? runHead()
+        : this.execute(ahead.method, ahead.parameters, requestOptions).then(
+            runHead,
+            runHead,
+          );
+    void execution
       .then(async (result) => {
         if (activeCancellation !== undefined) {
           try {

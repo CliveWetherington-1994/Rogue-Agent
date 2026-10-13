@@ -39,6 +39,7 @@ import { GhidraLaunchError, type GhidraLaunch } from "./GhidraLauncher.js";
 import { GhidraResponseBuffer } from "./GhidraResponseBuffer.js";
 import { GhidraResponseRouter } from "./GhidraResponseRouter.js";
 import { GhidraRequestQueue } from "./GhidraRequestQueue.js";
+import { createGhidraPseudocodePrefetchPlanner } from "./GhidraPrefetchPlanner.js";
 import {
   bindGhidraSessionFailure,
   GhidraSessionError,
@@ -167,6 +168,7 @@ export class GhidraClient {
         this.#wire.request(method, parameters, requestOptions),
       (kind, message, cause) => this.#failure(kind, message, cause),
       () => this.#stopAfterActiveCancellation(),
+      createGhidraPseudocodePrefetchPlanner(),
     );
   }
 

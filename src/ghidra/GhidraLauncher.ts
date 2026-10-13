@@ -36,6 +36,7 @@ import {
 } from "../process/ProviderProcess.js";
 import { ghidraJavaEnvironment } from "./GhidraInstallation.js";
 import { ghidraJavaLaunch } from "./GhidraJavaLaunch.js";
+import { ghidraJvmTuning, type GhidraJvmTuning } from "./GhidraJvmTuning.js";
 import type { GhidraTransportKind } from "./GhidraTransport.js";
 import {
   snapshotGhidraExtensions,
@@ -170,6 +171,8 @@ export interface GhidraHeadlessLauncherOptions {
   readonly pspExtension?: GhidraPspExtension;
   /** Remap typed float storage for the soft-float o32 ABI after analysis. */
   readonly mipsSoftFloat?: true;
+  /** Per-function decompile deadline sent to the bridge; 0 waits forever. */
+  readonly decompileTimeoutSeconds?: number;
   /** Spawn seam for provider-boundary lifecycle tests. */
   readonly spawnProcess?: typeof spawnOwnedProviderProcess;
 }
@@ -249,6 +252,12 @@ export class GhidraHeadlessLauncher implements GhidraLauncher {
           ...(extensions.length === 0
             ? {}
             : { analysis_extensions: extensions }),
+          ...(this.options.decompileTimeoutSeconds === undefined ||
+          this.options.decompileTimeoutSeconds === 0
+            ? {}
+            : {
+                decompile_timeout_seconds: this.options.decompileTimeoutSeconds,
+              }),
         })}\n`,
         platform,
       );
@@ -815,9 +824,19 @@ const ghidraLaunchEnvironment = (
   executable: string,
   selectedEnvironment: Readonly<NodeJS.ProcessEnv>,
 ): NodeJS.ProcessEnv => {
+  const javaEnvironment = ghidraJavaEnvironment(
+    javaHome,
+    selectedEnvironment,
+    platform,
+  );
   return {
-    ...ghidraJavaEnvironment(javaHome, selectedEnvironment, platform),
-    ...ghidraHeadlessJavaOptions(paths.homeRoot, paths.tempRoot, platform),
+    ...javaEnvironment,
+    ...ghidraHeadlessJavaOptions(
+      paths.homeRoot,
+      paths.tempRoot,
+      platform,
+      ghidraJvmTuning(javaEnvironment),
+    ),
     HOME: paths.homeRoot,
     TMPDIR: paths.tempRoot,
     ...(platform === "win32"
@@ -838,22 +857,44 @@ const ghidraLaunchEnvironment = (
   };
 };
 
+const windowsHotSpotFlag = (option: string): string => {
+  if (!/^-XX:[A-Za-z]+=[0-9]+$/u.test(option))
+    throw new GhidraLaunchError(
+      `Ghidra JVM tuning flag is not admissible for analyzeHeadless.bat: ${option}`,
+    );
+  return option;
+};
+
 /** Encode provider-owned JVM paths for the platform launcher that consumes them. */
 export const ghidraHeadlessJavaOptions = (
   homeRoot: string,
   tempRoot: string,
   platform: NodeJS.Platform,
+  tuning?: GhidraJvmTuning,
 ): Pick<
   NodeJS.ProcessEnv,
   "JDK_JAVA_OPTIONS" | "GHIDRA_HEADLESS_JAVA_OPTIONS"
-> => {
+> & {
+  readonly GHIDRA_HEADLESS_MAXMEM?: string;
+} => {
   const options = [`-Duser.home=${homeRoot}`, `-Djava.io.tmpdir=${tempRoot}`];
   if (platform === "win32")
     return {
       JDK_JAVA_OPTIONS: [...options, "-XX:-UsePerfData"]
         .map((option) => ghidraBatchStep(() => quoteWindowsBatchToken(option)))
         .join(" "),
-      GHIDRA_HEADLESS_JAVA_OPTIONS: "",
+      // analyzeHeadless.bat appends this list after its own fixed
+      // `-XX:ParallelGCThreads=2 -XX:CICompilerCount=2`, and HotSpot keeps the
+      // last occurrence of a flag, so host-sized values take effect. The batch
+      // file forwards the whole list inside one quoted argument, so each token
+      // stays unquoted and is restricted to a numeric HotSpot flag.
+      GHIDRA_HEADLESS_JAVA_OPTIONS:
+        tuning === undefined
+          ? ""
+          : tuning.options.map(windowsHotSpotFlag).join(" "),
+      ...(tuning === undefined
+        ? {}
+        : { GHIDRA_HEADLESS_MAXMEM: tuning.maxHeap }),
     };
   // POSIX launches the JVM directly, so these properties travel as separate
   // argv items instead of the shell-split analyzeHeadless option list.

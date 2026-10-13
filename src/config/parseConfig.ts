@@ -94,6 +94,12 @@ export const parseConfig = (
     ...(env.REA_GHIDRA_NATIVEAOT_JAR === undefined
       ? {}
       : { ghidraNativeAotJar: env.REA_GHIDRA_NATIVEAOT_JAR }),
+    ...(env.REA_GHIDRA_DECOMPILE_TIMEOUT_SECONDS === undefined
+      ? {}
+      : {
+          ghidraDecompileTimeoutSeconds:
+            env.REA_GHIDRA_DECOMPILE_TIMEOUT_SECONDS,
+        }),
     ilspyCmdPath: env.REA_ILSPY_CMD_PATH,
     hopperLauncherPath:
       env.HOPPER_LAUNCHER_PATH ??

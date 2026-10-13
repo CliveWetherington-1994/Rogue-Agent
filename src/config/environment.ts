@@ -50,6 +50,13 @@ const environmentSchema = z.object({
   REA_GHIDRA_LANGUAGE_ID: ghidraLanguageIdSchema.optional(),
   REA_GHIDRA_COMPILER_SPEC_ID: ghidraCompilerSpecIdSchema.optional(),
   REA_GHIDRA_DISABLED_ANALYZERS: ghidraDisabledAnalyzersSchema.optional(),
+  /** Seconds before one Ghidra decompilation is abandoned; 0 waits forever. */
+  REA_GHIDRA_DECOMPILE_TIMEOUT_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(86_400)
+    .optional(),
   REA_GHIDRA_SEED_FILE: z
     .string()
     .min(1)
