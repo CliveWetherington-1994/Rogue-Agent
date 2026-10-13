@@ -657,3 +657,15 @@ button:focus-visible,
     display: none;
   }
 }
+
+.cache-row {
+  align-items: center;
+}
+
+.cache-info {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  font-size: 12px;
+}

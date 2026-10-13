@@ -741,6 +741,8 @@ async function openSettings() {
   form.idaMcpConfigPath.value = settings.idaMcpConfigPath ?? "";
   form.decompileTimeoutSeconds.value = String(settings.decompileTimeoutSeconds);
   form.prefetchCallees.checked = settings.prefetchCallees;
+  form.analysisCache.checked = settings.analysisCache;
+  void renderCacheSummary();
   $("ghidra-options").innerHTML = environment.ghidra
     .map(
       (g) =>
@@ -765,6 +767,35 @@ async function openSettings() {
   $("settings-dialog").showModal();
 }
 
+const formatBytes = (bytes) =>
+  bytes < 1024 ** 2
+    ? `${Math.round(bytes / 1024)} KB`
+    : bytes < 1024 ** 3
+      ? `${(bytes / 1024 ** 2).toFixed(0)} MB`
+      : `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+
+async function renderCacheSummary(cache) {
+  try {
+    const report = cache ?? (await api("/api/cache")).cache;
+    $("cache-summary").textContent =
+      `${report.entries} stored ${report.entries === 1 ? "analysis" : "analyses"}, ${formatBytes(report.bytes)}`;
+    $("cache-summary").title = report.directory;
+  } catch (error) {
+    $("cache-summary").textContent = error.message;
+  }
+}
+
+$("cache-clear").addEventListener("click", async () => {
+  try {
+    await renderCacheSummary(
+      (await api("/api/cache/clear", { body: {} })).cache,
+    );
+    toast("Stored analyses cleared");
+  } catch (error) {
+    toast(error.message);
+  }
+});
+
 $("settings-button").addEventListener(
   "click",
   () => void openSettings().catch((error) => toast(error.message)),
@@ -785,6 +816,7 @@ $("settings-form").addEventListener("submit", async (event) => {
           form.decompileTimeoutSeconds.value || 0,
         ),
         prefetchCallees: form.prefetchCallees.checked,
+        analysisCache: form.analysisCache.checked,
       },
     });
     $("settings-dialog").close();

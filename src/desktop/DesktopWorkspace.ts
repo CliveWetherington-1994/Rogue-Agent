@@ -79,6 +79,7 @@ export const desktopEngineEnvironment = (
     REA_GHIDRA_DECOMPILE_TIMEOUT_SECONDS: String(
       settings.decompileTimeoutSeconds,
     ),
+    REA_GHIDRA_ANALYSIS_CACHE: settings.analysisCache ? "on" : "off",
   };
   if (settings.ghidraInstallDir !== null)
     environment.GHIDRA_INSTALL_DIR = settings.ghidraInstallDir;
@@ -115,6 +116,7 @@ const settingsFingerprint = (settings: DesktopSettings): string =>
     settings.javaHome,
     settings.idaMcpConfigPath,
     settings.decompileTimeoutSeconds,
+    settings.analysisCache,
   ]);
 
 /**

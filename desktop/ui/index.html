@@ -202,6 +202,16 @@
             Pre-decompile called functions in the background
           </label>
         </div>
+        <div class="row two cache-row">
+          <label class="checkbox">
+            <input name="analysisCache" type="checkbox" />
+            Reuse the analysis when a binary is opened again
+          </label>
+          <div class="cache-info">
+            <span id="cache-summary" class="muted"></span>
+            <button id="cache-clear" type="button">Clear</button>
+          </div>
+        </div>
         <p id="settings-error" class="error hidden"></p>
         <menu>
           <button value="cancel" formnovalidate>Cancel</button>

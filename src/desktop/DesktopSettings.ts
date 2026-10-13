@@ -25,6 +25,8 @@ export const desktopSettingsSchema = z.strictObject({
   decompileTimeoutSeconds: z.number().int().min(0).max(86_400).default(120),
   /** Decompile a function's callees in the background after it opens. */
   prefetchCallees: z.boolean().default(true),
+  /** Reuse a binary's stored Ghidra analysis when it is opened again. */
+  analysisCache: z.boolean().default(true),
   recentFiles: z.array(absolutePath).max(10).default([]),
 });
 export type DesktopSettings = z.infer<typeof desktopSettingsSchema>;

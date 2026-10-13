@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import {
   createServer,
   type IncomingMessage,
@@ -12,6 +12,7 @@ import { extname, isAbsolute, join, normalize, sep } from "node:path";
 
 import { z } from "zod";
 
+import { defaultGhidraAnalysisCacheDirectory } from "../ghidra/GhidraAnalysisCache.js";
 import {
   discoverGhidraInstallations,
   discoverJavaHomes,
@@ -330,6 +331,32 @@ export const startDesktopServer = async (
     return { export: exportState };
   };
 
+  const cacheDirectory = (): string => {
+    const configured = options.environment.REA_GHIDRA_ANALYSIS_CACHE_DIR;
+    return configured !== undefined && isAbsolute(configured)
+      ? configured
+      : defaultGhidraAnalysisCacheDirectory(options.environment);
+  };
+  const cacheReport = async () => {
+    const directory = cacheDirectory();
+    let entries = 0;
+    let bytes = 0;
+    for (const name of await readdir(directory).catch(() => [])) {
+      if (name.endsWith(".json")) entries++;
+      bytes +=
+        (await stat(join(directory, name)).catch(() => undefined))?.size ?? 0;
+    }
+    return { directory, entries, bytes };
+  };
+  const clearCache = async () => {
+    const directory = cacheDirectory();
+    for (const name of await readdir(directory).catch(() => []))
+      // Only the cache's own files; never anything else in the directory.
+      if (/^[a-f0-9]{64}(?:\.[\w-]+)*\.(?:gzf|json|partial)$/u.test(name))
+        await rm(join(directory, name), { force: true });
+    return cacheReport();
+  };
+
   /** JSON routes: each returns the response body for a 200 (or 202) reply. */
   type RouteContext = {
     readonly url: URL;
@@ -343,6 +370,8 @@ export const startDesktopServer = async (
   const routes: Readonly<Record<string, (context: RouteContext) => unknown>> = {
     "GET /api/state": () => ({ state: workspace.state, export: exportState }),
     "GET /api/environment": () => environmentReport(),
+    "GET /api/cache": async () => ({ cache: await cacheReport() }),
+    "POST /api/cache/clear": async () => ({ cache: await clearCache() }),
     "POST /api/settings": async ({ body }) => updateSettings(await body()),
     "POST /api/open": async ({ body }) => {
       const { path } = parseOrThrow(absolutePathBody, await body());
