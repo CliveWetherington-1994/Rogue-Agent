@@ -1,17 +1,19 @@
 name: CI
 
 on:
-  pull_request:
   push:
-    branches: [main]
+    branches: ["**"]
     tags: ["v*"]
+  pull_request:
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # One run per commit: a push and its pull_request event share the group.
+  group: ci-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
 env:
