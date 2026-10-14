@@ -16,6 +16,7 @@ import {
   desktopConfigDirectory,
 } from "./desktop/DesktopSettings.js";
 import { findBundledTools } from "./desktop/DesktopDiscovery.js";
+import { DesktopNotebookStore } from "./desktop/DesktopNotebook.js";
 import { DesktopWorkspace } from "./desktop/DesktopWorkspace.js";
 import { startDesktopServer } from "./desktop/DesktopServer.js";
 
@@ -101,6 +102,7 @@ export const runDesktop = async (argv: readonly string[]): Promise<number> => {
   const handle = await startDesktopServer({
     workspace,
     settings,
+    notebooks: new DesktopNotebookStore(join(configDirectory, "notebooks")),
     environment,
     uiRoot: resolve(fileURLToPath(new URL("../desktop/ui/", import.meta.url))),
     ...(applicationDirectory === undefined ? {} : { applicationDirectory }),

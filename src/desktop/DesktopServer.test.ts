@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,7 @@ import {
   startDesktopServer,
   type DesktopServerHandle,
 } from "./DesktopServer.js";
+import { DesktopNotebookStore } from "./DesktopNotebook.js";
 import { DesktopSettingsStore } from "./DesktopSettings.js";
 import {
   DesktopError,
@@ -27,7 +28,25 @@ const idleState: DesktopState = {
   timings: { openMs: null, analysisMs: null },
 };
 
-const fakeWorkspace = (): DesktopWorkspace & { decompiled: string[] } => {
+const readyState: DesktopState = {
+  ...idleState,
+  phase: "ready",
+  target: {
+    path: "/games/demo.exe",
+    sha256: "a".repeat(64),
+    format: "pe",
+    architecture: "x86_64",
+  },
+  document: "demo.exe",
+  functionCount: 1,
+};
+
+type FakeWorkspace = DesktopWorkspace & {
+  decompiled: string[];
+  state: DesktopState;
+};
+
+const fakeWorkspace = (): FakeWorkspace => {
   const decompiled: string[] = [];
   const workspace = {
     decompiled,
@@ -56,9 +75,39 @@ const fakeWorkspace = (): DesktopWorkspace & { decompiled: string[] } => {
     strings: async () => [],
     imports: async () => [],
     search: async () => [],
+    findText: async (pattern: string) => ({
+      matches: [
+        {
+          address: "0x402000",
+          value: `Press ${pattern}`,
+          functions: [
+            {
+              address: "0x401000",
+              name: "main",
+              external: false,
+              thunk: false,
+            },
+          ],
+        },
+      ],
+      truncated: false,
+    }),
+    modPlanEntries: async (
+      entries: Record<string, { label: string | null; note: string }>,
+    ) =>
+      Object.entries(entries).map(([address, entry]) => ({
+        address,
+        originalName: "main",
+        label: entry.label,
+        note: entry.note,
+        fileOffset: 0x400,
+        callers: [],
+        callees: ["printf"],
+        pseudocode: "int main(void) { return 0; }",
+      })),
     exportAll: async () => "",
   };
-  return workspace as unknown as DesktopWorkspace & { decompiled: string[] };
+  return workspace as unknown as FakeWorkspace;
 };
 
 interface Reply {
@@ -110,40 +159,39 @@ const call = (
     outgoing.end(body);
   });
 
-describe("desktop server", () => {
-  const cleanups: (() => Promise<void>)[] = [];
-  afterEach(async () => {
-    for (const cleanup of cleanups.splice(0)) await cleanup();
+const cleanups: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0)) await cleanup();
+});
+
+const start = async () => {
+  const root = await mkdtemp(join(tmpdir(), "rogue-desktop-"));
+  const uiRoot = join(root, "ui");
+  await mkdir(uiRoot);
+  await writeFile(
+    join(uiRoot, "index.html"),
+    "<!doctype html><title>ok</title>",
+  );
+  await writeFile(join(root, "secret.txt"), "outside the UI root");
+  const settings = await DesktopSettingsStore.load(join(root, "settings.json"));
+  const workspace = fakeWorkspace();
+  const handle = await startDesktopServer({
+    workspace,
+    settings,
+    notebooks: new DesktopNotebookStore(join(root, "notebooks")),
+    environment: {},
+    uiRoot,
+    version: "test",
+    onShutdown: () => undefined,
   });
+  cleanups.push(async () => {
+    await handle.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  return { handle, workspace, root };
+};
 
-  const start = async () => {
-    const root = await mkdtemp(join(tmpdir(), "rogue-desktop-"));
-    const uiRoot = join(root, "ui");
-    await mkdir(uiRoot);
-    await writeFile(
-      join(uiRoot, "index.html"),
-      "<!doctype html><title>ok</title>",
-    );
-    await writeFile(join(root, "secret.txt"), "outside the UI root");
-    const settings = await DesktopSettingsStore.load(
-      join(root, "settings.json"),
-    );
-    const workspace = fakeWorkspace();
-    const handle = await startDesktopServer({
-      workspace,
-      settings,
-      environment: {},
-      uiRoot,
-      version: "test",
-      onShutdown: () => undefined,
-    });
-    cleanups.push(async () => {
-      await handle.close();
-      await rm(root, { recursive: true, force: true });
-    });
-    return { handle, workspace, root };
-  };
-
+describe("desktop server", () => {
   it("serves the UI with a restrictive content security policy", async () => {
     const { handle } = await start();
     const reply = await call(handle, "/", { token: null });
@@ -228,7 +276,75 @@ describe("desktop server", () => {
     });
     expect(reply.status).toBe(400);
   });
+});
 
+describe("desktop notebook routes", () => {
+  it("keeps names and notes per binary, only while one is open", async () => {
+    const { handle, workspace, root } = await start();
+    expect((await call(handle, "/api/notebook")).status).toBe(409);
+    workspace.state = readyState;
+    const named = await call(handle, "/api/notebook", {
+      body: {
+        address: "0x401000",
+        label: "  start_game  ",
+        note: "Boots the menu",
+      },
+    });
+    expect(named.status).toBe(200);
+    expect(JSON.parse(named.body).notebook.entries["0x401000"]).toMatchObject({
+      label: "start_game",
+      note: "Boots the menu",
+    });
+    const stored = JSON.parse(
+      await readFile(join(root, "notebooks", `${"a".repeat(64)}.json`), "utf8"),
+    );
+    expect(stored).toMatchObject({
+      format: "rogue-agent-notebook-v1",
+      target_name: "demo.exe",
+      entries: { "0x401000": { label: "start_game" } },
+    });
+    expect(
+      (
+        await call(handle, "/api/notebook", {
+          body: { address: "0x401000", label: "bad\nname" },
+        })
+      ).status,
+    ).toBe(400);
+    const cleared = await call(handle, "/api/notebook", {
+      body: { address: "0x401000", label: "", note: "" },
+    });
+    expect(JSON.parse(cleared.body).notebook.entries).toEqual({});
+  });
+
+  it("finds text and writes a mod plan for the named functions", async () => {
+    const { handle, workspace, root } = await start();
+    workspace.state = readyState;
+    const found = await call(handle, "/api/find-text?q=Start");
+    expect(JSON.parse(found.body).matches[0]).toMatchObject({
+      value: "Press Start",
+      functions: [{ address: "0x401000" }],
+    });
+    expect((await call(handle, "/api/find-text")).status).toBe(400);
+    await call(handle, "/api/notebook", {
+      body: { address: "0x401000", label: "start_game", note: "Hook here." },
+    });
+    const path = join(root, "plan.md");
+    const written = await call(handle, "/api/mod-plan", { body: { path } });
+    expect(JSON.parse(written.body)).toEqual({ path, entries: 1 });
+    const plan = await readFile(path, "utf8");
+    expect(plan).toContain("# Mod plan: demo.exe");
+    expect(plan).toContain("## start_game");
+    expect(plan).toContain("- File offset: `0x400`");
+    expect(plan).toContain("Hook here.");
+    expect(plan).toContain("```c\nint main(void) { return 0; }\n```");
+    expect(
+      (await call(handle, "/api/mod-plan", { body: { path: "plan.md" } }))
+        .status,
+    ).toBe(400);
+  });
+});
+
+describe("desktop server events", () => {
   it("streams state over server-sent events with the token in the query", async () => {
     const { handle } = await start();
     const frame = await new Promise<string>((resolve, reject) => {

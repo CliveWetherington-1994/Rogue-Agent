@@ -20,6 +20,11 @@ import {
   inspectJavaHome,
 } from "./DesktopDiscovery.js";
 import {
+  type DesktopNotebookStore,
+  notebookPatchSchema,
+  renderModPlan,
+} from "./DesktopNotebook.js";
+import {
   desktopSettingsPatchSchema,
   type DesktopSettingsStore,
 } from "./DesktopSettings.js";
@@ -58,6 +63,8 @@ const addressSchema = z
 export interface DesktopServerOptions {
   readonly workspace: DesktopWorkspace;
   readonly settings: DesktopSettingsStore;
+  /** Per-binary names and notes, keyed by SHA-256. */
+  readonly notebooks: DesktopNotebookStore;
   readonly environment: Readonly<NodeJS.ProcessEnv>;
   /** Directory holding index.html, app.js and app.css. */
   readonly uiRoot: string;
@@ -138,11 +145,22 @@ const parseOrThrow = <Schema extends z.ZodType>(
   return parsed.data;
 };
 
+/** Kinds of file the Save dialog offers. */
+type SaveKind = "c" | "markdown";
+const SAVE_FILTERS: Readonly<
+  Record<SaveKind, { readonly label: string; readonly extension: string }>
+> = {
+  c: { label: "C source", extension: "c" },
+  markdown: { label: "Markdown", extension: "md" },
+};
+
 /** Ask the OS for a file path when the native window cannot. */
 const pickFileWithShell = (
   mode: "open" | "save",
   suggested: string | undefined,
+  kind: SaveKind,
 ): Promise<string | null> => {
+  const filter = SAVE_FILTERS[kind];
   if (process.platform !== "win32")
     return new Promise((resolve) => {
       execFile(
@@ -167,7 +185,7 @@ const pickFileWithShell = (
     `$d = New-Object System.Windows.Forms.${dialog}`,
     mode === "open"
       ? "$d.Filter = 'Programs and libraries (*.exe;*.dll;*.sys;*.so;*.elf;*.bin)|*.exe;*.dll;*.sys;*.so;*.elf;*.bin|All files (*.*)|*.*'"
-      : "$d.Filter = 'C source (*.c)|*.c|All files (*.*)|*.*'",
+      : `$d.Filter = '${filter.label} (*.${filter.extension})|*.${filter.extension}|All files (*.*)|*.*'`,
     ...(suggested === undefined
       ? []
       : [`$d.FileName = '${suggested.replaceAll("'", "''")}'`]),
@@ -190,7 +208,14 @@ export const startDesktopServer = async (
   options: DesktopServerOptions,
 ): Promise<DesktopServerHandle> => {
   const token = options.token ?? randomBytes(32).toString("hex");
-  const { workspace, settings } = options;
+  const { workspace, settings, notebooks } = options;
+  /** The binary whose notebook a request reads or changes. */
+  const openTarget = () => {
+    const target = workspace.state.target;
+    if (target === null)
+      throw new DesktopError("no_target", "Open a binary first", 409);
+    return target;
+  };
   const eventStreams = new Set<ServerResponse>();
   const exportState = {
     running: false,
@@ -386,10 +411,52 @@ export const startDesktopServer = async (
         z.strictObject({
           mode: z.enum(["open", "save"]).default("open"),
           suggested: z.string().optional(),
+          kind: z.enum(["c", "markdown"]).default("c"),
         }),
         await body(),
       );
-      return { path: await pickFileWithShell(request.mode, request.suggested) };
+      return {
+        path: await pickFileWithShell(
+          request.mode,
+          request.suggested,
+          request.kind,
+        ),
+      };
+    },
+    "GET /api/notebook": async () => {
+      const target = openTarget();
+      return { notebook: await notebooks.load(target.sha256, target.path) };
+    },
+    "POST /api/notebook": async ({ body }) => {
+      const target = openTarget();
+      const patch = parseOrThrow(notebookPatchSchema, await body());
+      return {
+        notebook: await notebooks.update(target.sha256, target.path, patch),
+      };
+    },
+    "GET /api/find-text": async ({ url }) =>
+      workspace.findText(
+        parseOrThrow(
+          z.string().min(1).max(1000),
+          url.searchParams.get("q") ?? undefined,
+        ),
+        url.searchParams.get("regex") === "1",
+      ),
+    "POST /api/mod-plan": async ({ body }) => {
+      const { path } = parseOrThrow(absolutePathBody, await body());
+      const target = openTarget();
+      const notebook = await notebooks.load(target.sha256, target.path);
+      const entries = await workspace.modPlanEntries(notebook.entries);
+      await writeFile(
+        path,
+        renderModPlan({
+          target,
+          generatedAt: new Date().toISOString(),
+          entries,
+        }),
+        "utf8",
+      );
+      return { path, entries: entries.length };
     },
     "GET /api/functions": async () => ({
       functions: await workspace.functions(),
