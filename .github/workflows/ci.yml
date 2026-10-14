@@ -262,18 +262,16 @@ jobs:
           cd upstream && npm ci --no-audit --no-fund && npm run build
       - name: Upstream bridge verification (baseline)
         id: upstream_verify
+        # Information only: upstream's outcome never decides this job.
         continue-on-error: true
         working-directory: upstream
         run: node scripts/verify-real-ghidra.mjs
       - name: Bridge verification (this engine)
-        id: fork_verify
-        # A failure upstream also shows on this runner is not this fork's.
-        continue-on-error: ${{ steps.upstream_verify.outcome == 'failure' }}
         run: node scripts/verify-real-ghidra.mjs
-      - name: Report verification shared with upstream
+      - name: Report upstream baseline
         if: ${{ !cancelled() && steps.upstream_verify.outcome == 'failure' }}
         run: |
-          echo "::warning::Upstream's real-Ghidra verification fails on this runner (outcome: failure); this engine's verification outcome: ${{ steps.fork_verify.outcome }}. A failure both share is not blocking; see both step logs."
+          echo "::notice::Upstream's real-Ghidra verification fails on this runner; it is a baseline for comparison only. This engine's verification is blocking; see both step logs."
       - name: Benchmark this engine
         if: ${{ !cancelled() }}
         run: node scripts/desktop/benchmark-ghidra.mjs --target bench/sqlite3.exe --label "Rogue Agent" --out bench/fork.json

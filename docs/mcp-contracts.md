@@ -34,7 +34,11 @@ coverage declaration is also unknown. A producer that actually observed an
 empty facet can declare it available so observed absence remains comparable.
 Call comparison additionally retains the Evidence relationship coverage
 checks. IDA declares the facets its selected adapter cannot provide; an empty
-unsupported array does not prove observed absence.
+unsupported array does not prove observed absence. Ghidra declares `comments`
+(every comment type on every code unit in the function body; unavailable for
+external functions), `callers` and `callees`, and records call instructions
+without a resolved destination in `unresolved_calls`, which make callee
+coverage partial.
 Evidence and bundle imports reject unsupported fields in their envelopes,
 identities, manifests and other fixed metadata before authentication. Imports
 leave retained session state unchanged when validation fails. Keep application

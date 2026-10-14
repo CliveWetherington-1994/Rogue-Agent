@@ -113,7 +113,16 @@ describe("Ghidra function-analysis result values", () => {
         }),
       ).toEqual({
         ok: true,
-        value: { value: ["0x2000"], limitations: [limitation] },
+        value: {
+          value: ["0x2000"],
+          limitations: [limitation],
+          relationshipCoverage: {
+            status: "complete",
+            diagnostics: [
+              "Only resolved Ghidra call references are returned; unresolved computed or indirect calls remain unknown, while function classifications distinguish thunks and externals.",
+            ],
+          },
+        },
       });
     },
   );
@@ -541,6 +550,21 @@ const malformedOutputs = (): Array<
       "Swift literals without their omission record",
       "analyze_function",
       { ...dossier, swift_string_literals: [] },
+    ],
+    [
+      "dossier without its examined call sites",
+      "analyze_function",
+      Object.fromEntries(
+        Object.entries(dossier).filter(([key]) => key !== "unresolved_calls"),
+      ),
+    ],
+    [
+      "non-canonical unresolved call site",
+      "analyze_function",
+      {
+        ...dossier,
+        unresolved_calls: [{ address: "401000", reason: "No destination" }],
+      },
     ],
     [
       "missing classification",
