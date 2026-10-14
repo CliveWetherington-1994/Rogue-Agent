@@ -6,6 +6,7 @@ import type { BinarySession } from "../application/binary/BinarySession.js";
 import type { AnalysisOperation } from "../application/AnalysisProvider.js";
 import type { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import type { JsonValue } from "../domain/jsonValue.js";
+import type { ModPlanEntry } from "./DesktopNotebook.js";
 import type { DesktopSettings } from "./DesktopSettings.js";
 
 /** Lifecycle of the one target the desktop app keeps warm. */
@@ -66,6 +67,8 @@ const text = (value: JsonValue | undefined): string =>
 
 const CALLEE_PREFETCH_LIMIT = 16;
 const USAGE_LIMIT = 64;
+/** Matching strings whose users are resolved in one Find text request. */
+const FIND_TEXT_LIMIT = 25;
 const EXPORT_CHUNK = 256;
 
 /** Folders of the Ghidra and JDK shipped with the application, when present. */
@@ -571,6 +574,105 @@ export class DesktopWorkspace {
       const item = record(entry);
       return { address: text(item.address), value: text(item.value) };
     });
+  }
+
+  /**
+   * Strings matching `pattern`, each with the functions that use it: the
+   * shortest path from text seen in the program to the code behind it.
+   */
+  async findText(
+    pattern: string,
+    regex: boolean,
+  ): Promise<{
+    readonly matches: readonly {
+      readonly address: string;
+      readonly value: string;
+      readonly functions: readonly DesktopFunction[];
+    }[];
+    readonly truncated: boolean;
+  }> {
+    const found = await this.search("strings", pattern, regex);
+    const shown = found.slice(0, FIND_TEXT_LIMIT);
+    const usages = await Promise.allSettled(
+      shown.map((match) => this.usages(match.address)),
+    );
+    return {
+      matches: shown.map((match, index) => {
+        const used = usages[index];
+        return {
+          ...match,
+          functions: used?.status === "fulfilled" ? used.value : [],
+        };
+      }),
+      truncated: found.length > shown.length,
+    };
+  }
+
+  /** Where an address's bytes are in the file on disk, or null if they are not. */
+  async fileOffset(address: string): Promise<number | null> {
+    try {
+      const mapped = record(
+        await this.#run("address_to_file_offset", { address }),
+      );
+      return typeof mapped.file_offset === "number" ? mapped.file_offset : null;
+    } catch (cause: unknown) {
+      void cause;
+      return null;
+    }
+  }
+
+  /**
+   * Everything a mod plan shows for the annotated addresses, in address
+   * order. Labels from the notebook replace Ghidra's names in call lists.
+   */
+  async modPlanEntries(
+    entries: Readonly<
+      Record<string, { readonly label: string | null; readonly note: string }>
+    >,
+  ): Promise<ModPlanEntry[]> {
+    await this.functions();
+    const display = (row: DesktopFunction): string =>
+      entries[row.address]?.label ?? row.name;
+    const addresses = Object.keys(entries).sort((left, right) =>
+      left.localeCompare(right, "en", { numeric: true }),
+    );
+    return Promise.all(
+      addresses.map(async (address) => {
+        const entry = entries[address] ?? { label: null, note: "" };
+        const row = this.#functionsByAddress.get(address);
+        const fileOffset = await this.fileOffset(address);
+        if (row === undefined)
+          return {
+            address,
+            originalName: null,
+            label: entry.label,
+            note: entry.note,
+            fileOffset,
+            callers: [],
+            callees: [],
+            pseudocode: null,
+          };
+        const [references, pseudocode] = await Promise.all([
+          this.references(address).catch(() => ({ callers: [], callees: [] })),
+          row.external
+            ? Promise.resolve(null)
+            : this.#run("procedure_pseudo_code", { procedure: address }).then(
+                (value) => (typeof value === "string" ? value : null),
+                () => null,
+              ),
+        ]);
+        return {
+          address,
+          originalName: row.name,
+          label: entry.label,
+          note: entry.note,
+          fileOffset,
+          callers: references.callers.map(display),
+          callees: references.callees.map(display),
+          pseudocode,
+        };
+      }),
+    );
   }
 
   /**
