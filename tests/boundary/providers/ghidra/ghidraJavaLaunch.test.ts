@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
@@ -29,6 +29,7 @@ const warning =
 const fixture = async (
   mode: string,
   javaVmName: string | null = "OpenJDK 64-Bit Server VM",
+  decompileTimeoutSeconds?: number,
 ) => {
   const root = await createTestTempDirectory("rea-ghidra-java-launch-");
   const javaHome = join(root, "jdk");
@@ -77,6 +78,9 @@ if (mode === "env-failure" || (probe === "-vmargs" && mode === "vm-failure")) {
     ...(javaVmName === null ? {} : { javaVmName }),
     analyzeHeadlessPath: join(root, "ghidra", "support", "analyzeHeadless"),
     bridgeScriptPath: join(root, "ReaGhidraBridge.java"),
+    ...(decompileTimeoutSeconds === undefined
+      ? {}
+      : { decompileTimeoutSeconds }),
     spawnProcess: async (options) => {
       analysisArguments.push(options.arguments);
       const spawned = await spawnOwnedProviderProcess({
@@ -104,6 +108,53 @@ if (mode === "env-failure" || (probe === "-vmargs" && mode === "vm-failure")) {
 describe.skipIf(process.platform === "win32")(
   "Ghidra LaunchSupport JVM compatibility",
   () => {
+    it("sizes the analysis JVM from the host after LaunchSupport defaults", async () => {
+      const { session, launcher, analysisArguments } = await fixture("quiet");
+      const launched = await launcher.launch(session);
+      if (!launched.ok) throw launched.error;
+      const launchArguments = analysisArguments[0] ?? [];
+      const gcThreads = launchArguments.filter((argument) =>
+        argument.startsWith("-XX:ParallelGCThreads="),
+      );
+      expect(gcThreads).toHaveLength(1);
+      expect(launchArguments.indexOf("-Dfile.encoding=UTF8")).toBeLessThan(
+        launchArguments.indexOf(gcThreads[0] ?? ""),
+      );
+      expect(
+        launchArguments.filter((argument) =>
+          argument.startsWith("-XX:CICompilerCount="),
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("commits a configured decompile deadline to the bridge descriptor", async () => {
+      const configured = await fixture("quiet", undefined, 45);
+      const launched = await configured.launcher.launch(configured.session);
+      if (!launched.ok) throw launched.error;
+      const descriptor = JSON.parse(
+        await readFile(
+          join(configured.session.runtimeRoot, "session.json"),
+          "utf8",
+        ),
+      ) as Record<string, unknown>;
+      expect(descriptor.decompile_timeout_seconds).toBe(45);
+
+      const unbounded = await fixture("quiet");
+      const unboundedLaunch = await unbounded.launcher.launch(
+        unbounded.session,
+      );
+      if (!unboundedLaunch.ok) throw unboundedLaunch.error;
+      const unboundedDescriptor = JSON.parse(
+        await readFile(
+          join(unbounded.session.runtimeRoot, "session.json"),
+          "utf8",
+        ),
+      ) as Record<string, unknown>;
+      expect(unboundedDescriptor).not.toHaveProperty(
+        "decompile_timeout_seconds",
+      );
+    });
+
     it.each(["Eclipse OpenJ9 VM", "unrecognized VM", ""])(
       "keeps HotSpot-only flags off a VM identified as %s",
       async (javaVmName) => {

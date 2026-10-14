@@ -1,10 +1,10 @@
 import { parse } from "@babel/parser";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 /**
- * Reduce filesystem resolution during CLI and MCP startup. Keep dependencies
+ * Reduce filesystem resolution during CLI, MCP and desktop startup. Keep dependencies
  * external, dynamic imports lazy, and original compiled worker entrypoints.
  */
 export const bundleRuntime = async (root) => {
@@ -19,6 +19,7 @@ export const bundleRuntime = async (root) => {
   );
   for (const [directory, entries] of [
     ["mcp", { main: "main.js" }],
+    ["desktop-runtime", { desktop: "desktopMain.js" }],
     [
       "cli-runtime",
       {
@@ -29,6 +30,15 @@ export const bundleRuntime = async (root) => {
       },
     ],
   ]) {
+    // The desktop entry is optional so trimmed builds can omit the app.
+    if (
+      directory === "desktop-runtime" &&
+      !(await access(join(compiledRoot, entries.desktop)).then(
+        () => true,
+        () => false,
+      ))
+    )
+      continue;
     const bundle = await rolldown({
       input: Object.fromEntries(
         Object.entries(entries).map(([name, path]) => [

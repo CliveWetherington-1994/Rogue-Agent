@@ -702,12 +702,13 @@ have produced.
 ### Ghidra heap and CPU controls
 
 Set resource controls in the environment that launches the CLI or MCP server,
-before opening a new Ghidra session. On Linux and macOS, REA chooses the first
-nonempty setting in this order: `GHIDRA_HEADLESS_MAXMEM`, `GHIDRA_MAXMEM`, then
-`2G`. The chosen value becomes the JVM's `-Xmx` argument. Use a JVM heap-size
-value such as `512M` or `2G`; an invalid value causes Java startup to fail.
-The supported Ghidra 12.1.4 Windows headless script consumes the same settings
-with the same precedence.
+before opening a new Ghidra session. REA chooses the first nonempty setting in
+this order: `GHIDRA_HEADLESS_MAXMEM`, `GHIDRA_MAXMEM`, then a host-sized
+default of a quarter of physical memory, kept between `2G` and `16G` (the JVM
+only commits what it uses). The chosen value becomes the JVM's `-Xmx`
+argument. Use a JVM heap-size value such as `512M` or `2G`; an invalid value
+causes Java startup to fail. On Windows the value reaches the Ghidra 12.1.4
+headless script through `GHIDRA_HEADLESS_MAXMEM` with the same precedence.
 
 For a small target on a constrained host:
 
@@ -736,13 +737,57 @@ with its own isolated home/temp settings and `-XX:-UsePerfData`; on Linux and
 macOS it supplies isolated paths directly to Java. Use the supported heap
 settings above instead of adding a second `-Xmx` through an injection variable.
 
-The Linux/macOS launch sets `-XX:ParallelGCThreads=2` and
-`-XX:CICompilerCount=2`; the supported Windows headless script also sets these
-counts. These constrain particular JVM thread pools, not all analysis threads
-or CPU usage. REA does not pass Ghidra's `-max-cpu` option or expose a general
-Ghidra CPU limit. When needed, apply host CPU affinity and scheduling controls
+The JVM's garbage-collector and JIT compiler thread counts follow the host:
+`-XX:ParallelGCThreads` is the core count (2 to 8) and `-XX:CICompilerCount`
+half of it (2 to 8), instead of Ghidra's fixed two of each. On Windows they
+reach `analyzeHeadless.bat` through `GHIDRA_HEADLESS_JAVA_OPTIONS`, which the
+script appends after its own defaults. Set `REA_GHIDRA_JVM_TUNING=off` to
+restore Ghidra's fixed `2G`, two GC threads and two JIT threads. These
+constrain particular JVM thread pools, not all analysis threads or CPU usage.
+REA does not pass Ghidra's `-max-cpu` option or expose a general Ghidra CPU
+limit. When needed, apply host CPU affinity and scheduling controls
 to the REA process and verify the resulting JVM's affinity. Select CPUs allowed
 on the host; do not assume CPU numbers from another machine are valid.
+
+### Ghidra decompile controls
+
+Requests for pseudocode that are queued together, such as `batch_decompile`
+or several MCP calls in flight, are decompiled as one window by a pool of
+Ghidra decompilers, one per core up to eight; each request still returns its
+own result and Evidence. Each pooled decompiler is a native process that loads
+the language before its first function, so the pool is kept for the session
+and discarded when the Program changes. On the 1.8 MB SQLite benchmark each
+one held about 100 MB. Large functions, where the native
+decompiler does most of the work, gain the most; for short functions the
+JVM side dominates and windows roughly break even. Decompiled text is cached
+per function until the Program changes, so repeat views decompile once. Set
+`REA_GHIDRA_PARALLEL_DECOMPILE=off` to send every request alone.
+
+`REA_GHIDRA_DECOMPILE_TIMEOUT_SECONDS` bounds one decompilation (an integer
+from 0 to 86400). The default, `0`, waits indefinitely. With a bound, a
+function that exceeds it fails with `decompile_failed` and the session keeps
+serving other requests instead of blocking until cancellation restarts it.
+The Rogue Agent desktop app sets 120 seconds by default.
+
+### Ghidra analysis cache
+
+The first session for a target stores the analyzed Program (after import,
+pre-analysis options, seeds, auto-analysis and the post-analysis repairs, and
+before the bridge serves it) as a packed Ghidra database. A later session for
+the same target bytes, analysis profile, import options, Ghidra installation
+and bridge scripts imports that database with `-noanalysis`, so reopening a
+binary skips import and auto-analysis. Edits made during a session are never
+stored. Each entry's SHA-256 is checked against its manifest before reuse; a
+mismatched entry is deleted and the target is analyzed again.
+
+| Setting                            | Default                                                                                                                | Effect                                                     |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `REA_GHIDRA_ANALYSIS_CACHE`        | `on`                                                                                                                   | `off` analyzes every session from scratch                  |
+| `REA_GHIDRA_ANALYSIS_CACHE_DIR`    | `%LOCALAPPDATA%\rea\ghidra-analysis`, `~/Library/Caches/rea/ghidra-analysis`, or `$XDG_CACHE_HOME/rea/ghidra-analysis` | Absolute cache directory                                   |
+| `REA_GHIDRA_ANALYSIS_CACHE_MAX_MB` | `4096`                                                                                                                 | Size budget; least recently used entries are removed first |
+
+Storing adds the time to pack the database to the first session only. Delete
+the directory at any time to reclaim space.
 
 Verify controls at their consumer after the first Ghidra-backed query starts
 the JVM: inspect that owned JVM's effective `-Xmx` and GC/compiler flags, CPU

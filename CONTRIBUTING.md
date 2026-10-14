@@ -1,6 +1,6 @@
-# Contributing to REA
+# Contributing to Rogue Agent
 
-REA welcomes focused bug fixes, documentation improvements, tests, and reverse-engineering workflows. For large contract or architecture changes, explain the intended scope and link the relevant issue or design discussion.
+Rogue Agent builds on the REA engine. It welcomes focused bug fixes, documentation improvements, tests, and reverse-engineering workflows. For large contract or architecture changes, explain the intended scope and link the relevant issue or design discussion.
 
 ## Choosing a contribution
 
@@ -157,27 +157,36 @@ MinGW-w64, and `tar`; the build script does not run on Windows. See that guide
 for the build and artifact-verification commands and the separate real Windows
 verification prerequisites. Keep the generated addon and manifest uncommitted.
 
-## Documentation website
+## Documentation
 
-The VitePress site uses the Markdown files in `docs/`. Run `npm run docs:dev`
-for live editing, `npm run docs:build` to check the production build and
-links, and `npm run docs:preview` to preview that build at `/rea/`.
+Guides live in `docs/` as plain Markdown and render on GitHub. Keep links
+relative. Generated reference documents use `npm run docs:generate`; pull
+requests that change caller-visible behavior should also run `npm run docs:check`.
 
-Site navigation lives in `docs/.vitepress/config.ts`. Keep links to guides
-relative so they work on GitHub and the website; link to repository files
-outside `docs/` using their full GitHub URLs. Generated reference documents
-use `npm run docs:generate`; `docs:build` generates them before building the website.
+## Windows desktop app
 
-Pull requests run `npm run docs:check`. `.github/workflows/pages.yml` is a
-manual VitePress build and does not publish. The public site at
-<https://rea.tools/> serves `website/public/` through Cloudflare Workers. See
-the [website README](website/README.md#cloudflare-workers) for previews and
-manual deployments.
+The desktop app has three parts:
 
-The separate GitHub Pages host uses only the manual
-`.github/workflows/website-pages.yml` workflow on `main`. The repository's
-**Settings → Pages → Build and deployment → Source** must be set to
-**GitHub Actions** before deploying there.
+- `src/desktop/` and `src/desktopMain.ts`: the loopback HTTP server that keeps
+  one analysis session warm (compiled with the engine, bundled into
+  `dist/desktop-runtime/`).
+- `desktop/ui/`: the single-page UI (plain HTML, CSS and JavaScript; no build).
+- `desktop/launcher/`: the Rust/WebView2 window `RogueAgent.exe`.
+
+Run the UI against a local build in any browser with `npm run desktop`. Build
+the Windows package on Linux (MinGW-w64 and the Rust
+`x86_64-pc-windows-gnu` target) or let CI do it:
+
+```bash
+npm run build && npm run build:windows-native
+(cd desktop/launcher && cargo build --release --target x86_64-pc-windows-gnu)
+node scripts/desktop/package-windows.mjs --zip
+```
+
+`desktop/packaging/RogueAgent.iss` turns the staged folder into an installer
+with Inno Setup on Windows. CI runs the packaged app end to end against a real
+Ghidra on Windows and benchmarks it against the upstream engine
+(`scripts/desktop/benchmark-ghidra.mjs`).
 
 ## Development feedback and PR verification
 
@@ -270,21 +279,9 @@ Use the default `build/conformance/manifest.json` unless explicitly verifying
 another source-built manifest with `REA_HOPPER_CONFORMANCE_MANIFEST_PATH`.
 Generated fixtures and manifests remain ignored.
 
-## Maintainer release checklist
+## Releases
 
-Use the [release guide](docs/releasing.md). Main pushes automatically refresh a
-Release Please PR with the next version and changelog. Review its migration
-notes, wait for the current CI checks to pass, and merge it into main to publish.
-
-The Release workflow validates and tags that merge; both publishers build its
-exact SHA. Ordinary main pushes cannot publish packages. An optional manual
-`release/VERSION` checkpoint retains explicit preparation and publication.
-
-For grouped release notes with verified contributor thanks, use the repository's
-`rea-changelog-update` skill in `.agents/skills/rea-changelog-update/`. Its inventory,
-credit checks, and finalization process are described in the release guide.
-
-Keep new implementation commits on main for the next release. The workflow
-owns packaged-artifact verification, npm publication, the published CLI/MCP
-canary, and MCP Registry publication. Sync manual checkpoint metadata back to
-main after publication; see the guide for recovery and verification.
+Push a `v*` tag to build the portable zip and the installer in CI; both are
+attached to the workflow run as artifacts. The engine's package version in
+`package.json` must match the Windows native add-on manifest, which
+`npm run build:windows-native` regenerates.

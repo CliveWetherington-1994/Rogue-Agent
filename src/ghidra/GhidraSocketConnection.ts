@@ -112,6 +112,9 @@ const connectGhidraSocketOnce = (
     };
     const onConnect = (): void => {
       detach();
+      // Loopback TCP (Windows) otherwise lets Nagle hold a response's last
+      // small segment until the peer's delayed ACK, up to ~200 ms per request.
+      if (!("path" in target)) socket.setNoDelay(true);
       resolve(ok(socket));
     };
     const onError = (cause: Error): void => {

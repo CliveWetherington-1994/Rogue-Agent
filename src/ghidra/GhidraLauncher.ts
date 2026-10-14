@@ -36,6 +36,14 @@ import {
 } from "../process/ProviderProcess.js";
 import { ghidraJavaEnvironment } from "./GhidraInstallation.js";
 import { ghidraJavaLaunch } from "./GhidraJavaLaunch.js";
+import {
+  GHIDRA_ANALYSIS_CACHE_SCRIPT,
+  ghidraAnalysisCacheKey,
+  planGhidraAnalysisCache,
+  type GhidraAnalysisCachePlan,
+  type GhidraAnalysisCacheSettings,
+} from "./GhidraAnalysisCache.js";
+import { ghidraJvmTuning, type GhidraJvmTuning } from "./GhidraJvmTuning.js";
 import type { GhidraTransportKind } from "./GhidraTransport.js";
 import {
   snapshotGhidraExtensions,
@@ -65,6 +73,8 @@ export type GhidraLaunch = ProviderProcessLaunch & {
   readonly projectRoot: string;
   readonly ghidraLogPath: string;
   readonly scriptLogPath: string;
+  /** Whether this launch reused a stored analysis or stores its own. */
+  readonly analysisCache?: GhidraAnalysisCachePlan["kind"];
   readonly launchSupport?: readonly GhidraLaunchSupportDiagnostic[];
 };
 
@@ -170,6 +180,10 @@ export interface GhidraHeadlessLauncherOptions {
   readonly pspExtension?: GhidraPspExtension;
   /** Remap typed float storage for the soft-float o32 ABI after analysis. */
   readonly mipsSoftFloat?: true;
+  /** Per-function decompile deadline sent to the bridge; 0 waits forever. */
+  readonly decompileTimeoutSeconds?: number;
+  /** Reuse and store analyzed Programs across sessions. */
+  readonly analysisCache?: GhidraAnalysisCacheSettings;
   /** Spawn seam for provider-boundary lifecycle tests. */
   readonly spawnProcess?: typeof spawnOwnedProviderProcess;
 }
@@ -249,12 +263,27 @@ export class GhidraHeadlessLauncher implements GhidraLauncher {
           ...(extensions.length === 0
             ? {}
             : { analysis_extensions: extensions }),
+          ...(this.options.decompileTimeoutSeconds === undefined ||
+          this.options.decompileTimeoutSeconds === 0
+            ? {}
+            : {
+                decompile_timeout_seconds: this.options.decompileTimeoutSeconds,
+              }),
         })}\n`,
         platform,
       );
       if (isAborted(options.signal))
         return err(new AnalysisCancelledError("open_binary"));
+      const cachePlan = await this.#planAnalysisCache(session, platform);
       const headlessArguments = ghidraHeadlessArguments({
+        ...(cachePlan === undefined
+          ? {}
+          : {
+              analysisCache:
+                cachePlan.kind === "hit"
+                  ? cachePlan
+                  : { ...cachePlan, runId: session.runId },
+            }),
         platform,
         ...(psp === undefined ? {} : { psp: true as const }),
         ...(this.options.mipsSoftFloat === undefined
@@ -358,6 +387,7 @@ export class GhidraHeadlessLauncher implements GhidraLauncher {
         paths,
         platform,
         launchSupport,
+        cachePlan?.kind,
       );
       await writeGhidraRuntimeFile(
         paths.ownershipPath,
@@ -434,6 +464,49 @@ export class GhidraHeadlessLauncher implements GhidraLauncher {
       return err(primary);
     }
   }
+
+  /**
+   * Key this launch's analysis and decide between reusing a verified stored
+   * Program and storing this one. Any cache problem disables the cache for
+   * the launch instead of failing it.
+   */
+  async #planAnalysisCache(
+    session: GhidraLaunchSession,
+    platform: NodeJS.Platform,
+  ): Promise<GhidraAnalysisCachePlan | undefined> {
+    const settings = this.options.analysisCache;
+    if (settings === undefined) return undefined;
+    try {
+      const key = await ghidraAnalysisCacheKey({
+        targetSha256: session.targetSha256,
+        profileDigest: session.profileDigest,
+        providerVersion: session.providerVersion,
+        analyzeHeadlessPath: this.options.analyzeHeadlessPath,
+        bridgeDirectory: dirname(this.options.bridgeScriptPath),
+        platform,
+        importOptions: {
+          dos_mz: this.options.dosMz ?? false,
+          dos_com: this.options.dosCom ?? false,
+          raw_binary: this.options.rawBinary ?? null,
+          language_override: this.options.languageOverride ?? null,
+          disabled_analyzers: this.options.disabledAnalyzers ?? [],
+          analysis_seeds: this.options.analysisSeeds ?? null,
+          mips_soft_float: this.options.mipsSoftFloat ?? false,
+          psp: this.options.pspExtension?.sha256 ?? null,
+        },
+      });
+      const plan = await planGhidraAnalysisCache(settings, key);
+      // analyzeHeadless.bat cannot carry interpreter metacharacters.
+      if (platform === "win32")
+        quoteWindowsBatchToken(
+          plan.kind === "hit" ? plan.packedPath : plan.directory,
+        );
+      return plan;
+    } catch (cause: unknown) {
+      void cause;
+      return undefined;
+    }
+  }
 }
 
 const ownedGhidraLaunch = (
@@ -441,12 +514,14 @@ const ownedGhidraLaunch = (
   paths: ReturnType<typeof ghidraRuntimePaths>,
   platform: NodeJS.Platform,
   launchSupport: readonly GhidraLaunchSupportDiagnostic[],
+  analysisCache?: GhidraAnalysisCachePlan["kind"],
 ): GhidraLaunch => ({
   ...ownedGhidraProcess(spawned, platform),
   projectRoot: paths.projectRoot,
   ghidraLogPath: paths.ghidraLogPath,
   scriptLogPath: paths.scriptLogPath,
   ...(launchSupport.length === 0 ? {} : { launchSupport: [...launchSupport] }),
+  ...(analysisCache === undefined ? {} : { analysisCache }),
 });
 
 const ownedGhidraProcess = (
@@ -544,6 +619,18 @@ export interface GhidraHeadlessArgumentOptions {
   readonly disabledAnalyzers?: readonly string[];
   /** Canonical seed snapshot passed to the pre-analysis seed script. */
   readonly seedPath?: string;
+  /**
+   * `hit` imports a stored, already analyzed Program instead of the target;
+   * `store` saves this session's analyzed Program before the bridge serves.
+   */
+  readonly analysisCache?:
+    | { readonly kind: "hit"; readonly packedPath: string }
+    | {
+        readonly kind: "store";
+        readonly directory: string;
+        readonly key: string;
+        readonly runId: string;
+      };
 }
 
 /** Build the complete read-only headless invocation in deterministic order. */
@@ -598,6 +685,30 @@ export const ghidraHeadlessArguments = (
     throw new Error(
       "A raw-binary import cannot be combined with a DOS import.",
     );
+  const cache = options.analysisCache;
+  if (cache?.kind === "hit")
+    // The stored Program already carries the loader choice, pre-analysis
+    // options, seeds, auto-analysis and post-analysis repairs.
+    return [
+      options.projectRoot,
+      "rea-project",
+      "-import",
+      cache.packedPath,
+      "-loader",
+      "GzfLoader",
+      "-noanalysis",
+      "-readOnly",
+      "-deleteProject",
+      "-log",
+      options.ghidraLogPath,
+      "-scriptlog",
+      options.scriptLogPath,
+      "-scriptPath",
+      bridgeDirectory,
+      "-postScript",
+      options.bridgeScriptPath,
+      options.descriptorPath,
+    ];
   return [
     options.projectRoot,
     "rea-project",
@@ -703,6 +814,16 @@ export const ghidraHeadlessArguments = (
       ? [
           "-postScript",
           scriptPath.join(bridgeDirectory, "ReaGhidraMipsSoftFloat.java"),
+        ]
+      : []),
+    // Store the repaired Program before the bridge can change it.
+    ...(cache?.kind === "store"
+      ? [
+          "-postScript",
+          scriptPath.join(bridgeDirectory, GHIDRA_ANALYSIS_CACHE_SCRIPT),
+          cache.directory,
+          cache.key,
+          cache.runId,
         ]
       : []),
     "-postScript",
@@ -815,9 +936,19 @@ const ghidraLaunchEnvironment = (
   executable: string,
   selectedEnvironment: Readonly<NodeJS.ProcessEnv>,
 ): NodeJS.ProcessEnv => {
+  const javaEnvironment = ghidraJavaEnvironment(
+    javaHome,
+    selectedEnvironment,
+    platform,
+  );
   return {
-    ...ghidraJavaEnvironment(javaHome, selectedEnvironment, platform),
-    ...ghidraHeadlessJavaOptions(paths.homeRoot, paths.tempRoot, platform),
+    ...javaEnvironment,
+    ...ghidraHeadlessJavaOptions(
+      paths.homeRoot,
+      paths.tempRoot,
+      platform,
+      ghidraJvmTuning(javaEnvironment),
+    ),
     HOME: paths.homeRoot,
     TMPDIR: paths.tempRoot,
     ...(platform === "win32"
@@ -838,22 +969,44 @@ const ghidraLaunchEnvironment = (
   };
 };
 
+const windowsHotSpotFlag = (option: string): string => {
+  if (!/^-XX:[A-Za-z]+=[0-9]+$/u.test(option))
+    throw new GhidraLaunchError(
+      `Ghidra JVM tuning flag is not admissible for analyzeHeadless.bat: ${option}`,
+    );
+  return option;
+};
+
 /** Encode provider-owned JVM paths for the platform launcher that consumes them. */
 export const ghidraHeadlessJavaOptions = (
   homeRoot: string,
   tempRoot: string,
   platform: NodeJS.Platform,
+  tuning?: GhidraJvmTuning,
 ): Pick<
   NodeJS.ProcessEnv,
   "JDK_JAVA_OPTIONS" | "GHIDRA_HEADLESS_JAVA_OPTIONS"
-> => {
+> & {
+  readonly GHIDRA_HEADLESS_MAXMEM?: string;
+} => {
   const options = [`-Duser.home=${homeRoot}`, `-Djava.io.tmpdir=${tempRoot}`];
   if (platform === "win32")
     return {
       JDK_JAVA_OPTIONS: [...options, "-XX:-UsePerfData"]
         .map((option) => ghidraBatchStep(() => quoteWindowsBatchToken(option)))
         .join(" "),
-      GHIDRA_HEADLESS_JAVA_OPTIONS: "",
+      // analyzeHeadless.bat appends this list after its own fixed
+      // `-XX:ParallelGCThreads=2 -XX:CICompilerCount=2`, and HotSpot keeps the
+      // last occurrence of a flag, so host-sized values take effect. The batch
+      // file forwards the whole list inside one quoted argument, so each token
+      // stays unquoted and is restricted to a numeric HotSpot flag.
+      GHIDRA_HEADLESS_JAVA_OPTIONS:
+        tuning === undefined
+          ? ""
+          : tuning.options.map(windowsHotSpotFlag).join(" "),
+      ...(tuning === undefined
+        ? {}
+        : { GHIDRA_HEADLESS_MAXMEM: tuning.maxHeap }),
     };
   // POSIX launches the JVM directly, so these properties travel as separate
   // argv items instead of the shell-split analyzeHeadless option list.

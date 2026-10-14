@@ -8,7 +8,7 @@ Follow the [contribution scope and fail-closed integration rule](CONTRIBUTING.md
 
 Ghidra uses ephemeral databases without modifying executable bytes or controlling a GUI; Windows Ghidra P0 has no mutation authority. IDA analysis is read-only; never save or close an attached GUI database.
 
-Configuration changes must be additive and idempotent, with backups. Installers must not install or upgrade unrelated software, including Homebrew, Node.js, npm, Java, or Ghidra. Ghidra and IDA are bring-your-own. `rea setup` must show its planned changes and require approval before writing files or installing Hopper.
+Configuration changes must be additive and idempotent, with backups. Installers must not install or upgrade unrelated software, including Homebrew, Node.js, npm, Java, or Ghidra. For the engine, Ghidra and IDA are bring-your-own. The Rogue Agent Windows package ships private copies of Ghidra and a JDK inside its own folder, pinned by SHA-256 in `desktop/packaging/bundled-tools.json`; it never installs or changes a system-wide Java or Ghidra, and a folder chosen in Settings takes precedence. `rea setup` must show its planned changes and require approval before writing files or installing Hopper.
 
 Preserve caller-selected inputs and local evidence, including output, URLs, paths, digests, and metadata. Redact transport authentication credentials and explicitly marked sensitive values; do not infer secrecy from names or text patterns. Do not persist the ambient environment merely because a child inherits it.
 

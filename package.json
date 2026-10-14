@@ -2,6 +2,7 @@
   "name": "rea-agents",
   "mcpName": "io.github.morluto/rea",
   "version": "6.4.0",
+  "private": true,
   "description": "Reverse engineer anything from your terminal or agent with one CLI and MCP server.",
   "license": "MIT",
   "repository": {
@@ -26,16 +27,14 @@
     "mcp",
     "hopper"
   ],
-  "publishConfig": {
-    "access": "public"
-  },
   "type": "module",
   "imports": {
     "#javascript-analysis-worker": "./dist/composition/javascriptAnalysisWorkerProcess.js"
   },
   "bin": {
     "rea": "scripts/rea.mjs",
-    "rea-agents": "scripts/rea.mjs"
+    "rea-agents": "scripts/rea.mjs",
+    "rogue-agent": "scripts/rogue-agent-desktop.mjs"
   },
   "engines": {
     "node": "^22.19.0 || ^24.11.0 || >=26.0.0"
@@ -43,7 +42,6 @@
   "packageManager": "npm@11.16.0",
   "files": [
     "dist",
-    "install.sh",
     "bridge/hopper_bridge.py",
     "bridge/native/NativeUIChildren.swift",
     "bridge/native/ReaNativeUI.swift",
@@ -59,15 +57,17 @@
     "bridge/ghidra/ReaGhidraNoReturnFix.java",
     "bridge/ghidra/ReaGhidraMipsSoftFloat.java",
     "bridge/ghidra/ReaGhidraPrepareRaw.java",
+    "bridge/ghidra/ReaGhidraSaveAnalysis.java",
     "bridge/android/ReaJadxBridge.java",
     "bridge/mitmproxy/capture.py",
     "scripts/rea.mjs",
+    "scripts/rogue-agent-desktop.mjs",
+    "desktop/ui",
     "scripts/rea-android-workspace-guardian.mjs",
     "scripts/electron-active-hook.cjs",
     "scripts/electron-active-hook-boundaries.cjs",
     "scripts/hopper-demo-x11.py",
     "scripts/prepack.mjs",
-    "scripts/prepare.mjs",
     "skills",
     "README.md",
     "DISCLAIMER.md",
@@ -93,11 +93,9 @@
     "licenses"
   ],
   "scripts": {
-    "release:notes": "node scripts/release-notes.mjs",
     "deps:check": "node scripts/check-dependency-install.mjs",
     "metadata:generate": "node scripts/run-exclusive.mjs artifacts node scripts/generate-package-metadata.mjs",
     "metadata:check": "node scripts/generate-package-metadata.mjs --check",
-    "mcp-registry:check": "node scripts/verify-mcp-registry-metadata.mjs",
     "mcp-catalog:generate": "node scripts/check-dependency-install.mjs && node scripts/run-exclusive.mjs artifacts turbo run artifacts:mcp-catalog",
     "mcp-catalog:check": "node scripts/check-dependency-install.mjs && node scripts/run-exclusive.mjs artifacts turbo run mcp-catalog:check:built",
     "prebuild": "npm run deps:check",
@@ -115,8 +113,6 @@
     "precheck:ci": "npm run deps:check",
     "check:ci": "node scripts/run-exclusive.mjs artifacts turbo run typecheck lint:built format:check knip metadata:check jscpd scan:todos && npm run verify:architecture-guards",
     "build:cached": "node scripts/check-dependency-install.mjs && node scripts/run-exclusive.mjs artifacts turbo run artifacts:skills",
-    "build:termux": "node scripts/run-exclusive.mjs artifacts npm run build:termux:run",
-    "build:termux:run": "npm run compile:termux && npm run artifacts:skills",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "lint": "node scripts/ci/static-check-report.mjs lint && npm run verify:module-boundaries",
@@ -128,10 +124,11 @@
     "jscpd:details": "jscpd src/ tests/ --no-tips",
     "scan:todos": "node scripts/scan-todos.mjs",
     "start": "node scripts/rea.mjs mcp",
+    "desktop": "node scripts/rogue-agent-desktop.mjs --browser",
     "test": "npm run test:with-build",
     "test:with-build": "npm run test:prepare && vitest run",
     "test:run": "vitest run",
-    "test:python": "python3 -m unittest bridge/native/test_rea_lldb_tracer.py -v && python3 -m unittest discover -s experiments/analysis-efficiency -p 'test_*.py' -v",
+    "test:python": "python3 -m unittest bridge/native/test_rea_lldb_tracer.py -v",
     "test:local": "node scripts/run-development-tests.mjs local",
     "test:fast": "vitest run --project domain --project services --project adapters --project composition --project conformance --project evaluation",
     "pretest:boundary": "npm run test:prepare",
@@ -233,17 +230,11 @@
     "config:print": "node scripts/print-mcp-config.mjs",
     "evidence:generate": "node scripts/check-dependency-install.mjs && node scripts/run-exclusive.mjs artifacts turbo run artifacts:managed-evidence",
     "evidence:check": "node scripts/check-dependency-install.mjs && node scripts/run-exclusive.mjs artifacts turbo run evidence:check:built",
-    "predocs:dev": "npm run docs:generate",
-    "docs:dev": "vitepress dev docs",
-    "predocs:build": "npm run docs:generate",
-    "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs",
     "docs:generate": "node scripts/check-dependency-install.mjs && node scripts/run-exclusive.mjs artifacts npm run docs:prepare",
-    "docs:check": "node scripts/check-dependency-install.mjs && node scripts/run-exclusive.mjs artifacts turbo run docs:check:built && npm run test:local -- tests/conformance/readmeConsistency.test.ts",
+    "docs:check": "node scripts/check-dependency-install.mjs && node scripts/run-exclusive.mjs artifacts turbo run docs:check:built",
     "docs:check:built": "node scripts/generate-package-metadata.mjs --check && node scripts/generate-skill-metadata.mjs --check && node scripts/generate-product-catalog.mjs --check && node scripts/generate-completion-ledger.mjs --check && node scripts/check-doc-facts.mjs && node scripts/generate-error-schema.mjs --check && npm run licenses:check",
     "docs:error-schema": "node scripts/check-dependency-install.mjs && node scripts/run-exclusive.mjs artifacts turbo run artifacts:error-schema",
     "prepack": "node scripts/prepack.mjs",
-    "prepare": "node scripts/prepare.mjs",
     "verify:asset-catalog": "npm run build:cached && node scripts/verify/apple/asset-catalog.mjs",
     "verify:native-calls": "npm run build:cached && node scripts/verify-native-calls.mjs",
     "verify:native-ui:permissions": "npm run build:cached && node scripts/verify-native-ui.mjs --allow-permission-denial",
@@ -277,7 +268,6 @@
     "verify:recorded:crash": "npm run build:cached && node scripts/verify-recorded-crash.mjs",
     "mcp-catalog:check:built": "node scripts/generate-mcp-tool-catalog.mjs --check",
     "compile": "node scripts/clean-build-output.mjs && tsc -p tsconfig.build.json && node scripts/bundle-runtime.mjs",
-    "compile:termux": "node scripts/clean-build-output.mjs && node --max-old-space-size=3072 node_modules/typescript-termux/lib/tsc.js -p tsconfig.build.json && node scripts/bundle-runtime.mjs",
     "artifacts:mcp-catalog": "node scripts/generate-mcp-tool-catalog.mjs",
     "artifacts:skills": "node scripts/generate-skill-metadata.mjs",
     "artifacts:product-catalog": "node scripts/generate-product-catalog.mjs",
@@ -288,14 +278,10 @@
     "docs:prepare": "node scripts/generate-package-metadata.mjs && turbo run artifacts:product-catalog artifacts:managed-evidence artifacts:error-schema",
     "verify:web:qlog": "npm run build:cached && node scripts/verify-qlog-captures.mjs",
     "licenses:generate": "node scripts/generate-third-party-inventory.mjs",
-    "licenses:check": "node scripts/generate-third-party-inventory.mjs --check"
-  },
-  "lint-staged": {
-    "*.{cjs,cts,js,jsx,mjs,mts,ts,tsx}": [
-      "oxfmt",
-      "oxlint --fix"
-    ],
-    "*.{json,md,yml,yaml}": "oxfmt --no-error-on-unmatched-pattern"
+    "licenses:check": "node scripts/generate-third-party-inventory.mjs --check",
+    "verify:packet-capture": "npm run build:cached && node scripts/verify-packet-capture.mjs",
+    "verify:signal-recording": "npm run build:cached && node scripts/verify-signal-recording.mjs",
+    "verify:windows-native:inspection": "node scripts/verify-windows-native-inspection.mjs"
   },
   "dependencies": {
     "@babel/parser": "8.0.4",
@@ -337,11 +323,6 @@
     "yaml": "2.9.0",
     "zod": "4.4.3"
   },
-  "overrides": {
-    "vitepress": {
-      "vite": "6.4.4"
-    }
-  },
   "devDependencies": {
     "@fast-check/vitest": "0.5.0",
     "@types/cross-spawn": "6.0.6",
@@ -350,17 +331,13 @@
     "@types/write-file-atomic": "4.0.3",
     "@types/ws": "8.18.1",
     "@vitest/coverage-v8": "5.0.3",
-    "husky": "9.1.7",
     "jscpd": "5.0.12",
     "knip": "6.39.0",
-    "lint-staged": "16.4.0",
     "oxfmt": "0.72.0",
     "oxlint": "1.87.0",
     "rolldown": "1.2.12",
     "turbo": "2.11.7",
     "typescript": "7.0.2",
-    "typescript-termux": "npm:typescript@5.9.3",
-    "vitepress": "1.6.4",
     "vitest": "5.0.3"
   },
   "optionalDependencies": {

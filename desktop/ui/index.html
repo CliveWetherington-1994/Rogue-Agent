@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Rogue Agent</title>
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <div class="brand" title="Rogue Agent">
+        <img src="icon.svg" alt="" width="20" height="20" />
+        <span>Rogue Agent</span>
+      </div>
+      <button id="open-button" class="primary" title="Open a binary (Ctrl+O)">
+        Open…
+      </button>
+      <div class="nav-buttons">
+        <button id="back-button" class="icon" title="Back (Alt+←)" disabled>
+          ←
+        </button>
+        <button
+          id="forward-button"
+          class="icon"
+          title="Forward (Alt+→)"
+          disabled
+        >
+          →
+        </button>
+      </div>
+      <div id="target" class="target" title="">No file open</div>
+      <div id="status-pill" class="pill pill-idle">Idle</div>
+      <button
+        id="export-button"
+        title="Decompile every function to a .c file (Ctrl+Shift+E)"
+        disabled
+      >
+        Export C…
+      </button>
+      <button id="settings-button" class="icon" title="Settings">⚙</button>
+    </header>
+
+    <main id="workspace" class="workspace hidden">
+      <aside class="sidebar">
+        <nav class="tabs" role="tablist">
+          <button class="tab active" data-list="functions" role="tab">
+            Functions <span id="count-functions" class="count"></span>
+          </button>
+          <button class="tab" data-list="strings" role="tab">
+            Strings <span id="count-strings" class="count"></span>
+          </button>
+          <button class="tab" data-list="imports" role="tab">
+            Imports <span id="count-imports" class="count"></span>
+          </button>
+        </nav>
+        <div class="filter">
+          <input
+            id="filter"
+            type="search"
+            placeholder="Filter (Ctrl+F)"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <label class="toggle" title="Treat filter as a regular expression">
+            <input id="filter-regex" type="checkbox" /> .*
+          </label>
+        </div>
+        <div id="list" class="list" tabindex="0">
+          <div id="list-spacer" class="list-spacer"></div>
+          <div id="list-rows" class="list-rows"></div>
+        </div>
+      </aside>
+
+      <section class="viewer">
+        <div class="viewer-header">
+          <div class="function-title">
+            <span id="function-name">Select a function</span>
+            <span id="function-address" class="muted"></span>
+          </div>
+          <nav class="tabs compact" role="tablist">
+            <button class="tab active" data-view="code" role="tab">
+              Decompiled
+            </button>
+            <button class="tab" data-view="asm" role="tab">Assembly</button>
+            <button class="tab" data-view="info" role="tab">Info</button>
+          </nav>
+          <button
+            id="copy-button"
+            class="icon"
+            title="Copy to clipboard"
+            disabled
+          >
+            ⧉
+          </button>
+        </div>
+        <pre id="code" class="code" tabindex="0"></pre>
+      </section>
+
+      <aside class="calls">
+        <h3>Called by <span id="count-callers" class="count"></span></h3>
+        <ul id="callers" class="link-list"></ul>
+        <h3>Calls <span id="count-callees" class="count"></span></h3>
+        <ul id="callees" class="link-list"></ul>
+      </aside>
+    </main>
+
+    <section id="welcome" class="welcome">
+      <div class="welcome-card">
+        <img src="icon.svg" alt="" width="56" height="56" />
+        <h1>Rogue Agent</h1>
+        <p class="muted">
+          Decompile Windows and Linux binaries with Ghidra, locally.
+        </p>
+        <div id="drop-zone" class="drop-zone">
+          <button id="welcome-open" class="primary large">
+            Open a binary…
+          </button>
+          <p class="muted">or drop an .exe, .dll or ELF file here</p>
+          <form id="path-form" class="path-form">
+            <input
+              id="path-input"
+              type="text"
+              placeholder="C:\path\to\program.exe"
+              spellcheck="false"
+            />
+            <button type="submit">Open</button>
+          </form>
+        </div>
+        <div id="setup" class="setup"></div>
+        <div id="recent" class="recent"></div>
+      </div>
+    </section>
+
+    <footer class="statusbar">
+      <span id="status-text">Ready</span>
+      <span id="progress" class="progress hidden"
+        ><span id="progress-bar"></span
+      ></span>
+      <span class="spacer"></span>
+      <span id="engine" class="muted"></span>
+    </footer>
+
+    <dialog id="settings-dialog" class="dialog">
+      <form method="dialog" id="settings-form">
+        <h2>Settings</h2>
+        <label>
+          Analysis engine
+          <select name="provider">
+            <option value="ghidra">Ghidra (free, recommended)</option>
+            <option value="ida">IDA Pro (via ida-pro-mcp)</option>
+          </select>
+        </label>
+        <label>
+          Ghidra folder
+          <div class="row">
+            <input
+              name="ghidraInstallDir"
+              list="ghidra-options"
+              spellcheck="false"
+              placeholder="C:\ghidra_12.1.4_PUBLIC"
+            />
+            <datalist id="ghidra-options"></datalist>
+          </div>
+          <small id="ghidra-hint" class="muted"></small>
+        </label>
+        <label>
+          Java (JDK 21+) folder
+          <div class="row">
+            <input
+              name="javaHome"
+              list="java-options"
+              spellcheck="false"
+              placeholder="Detected automatically"
+            />
+            <datalist id="java-options"></datalist>
+          </div>
+          <small id="java-hint" class="muted"></small>
+        </label>
+        <label>
+          IDA MCP configuration file
+          <input
+            name="idaMcpConfigPath"
+            spellcheck="false"
+            placeholder="Only needed for IDA"
+          />
+        </label>
+        <div class="row two">
+          <label>
+            Decompile timeout (seconds, 0 = none)
+            <input
+              name="decompileTimeoutSeconds"
+              type="number"
+              min="0"
+              max="86400"
+              step="1"
+            />
+          </label>
+          <label class="checkbox">
+            <input name="prefetchCallees" type="checkbox" />
+            Pre-decompile called functions in the background
+          </label>
+        </div>
+        <div class="row two cache-row">
+          <label class="checkbox">
+            <input name="analysisCache" type="checkbox" />
+            Reuse the analysis when a binary is opened again
+          </label>
+          <div class="cache-info">
+            <span id="cache-summary" class="muted"></span>
+            <button id="cache-clear" type="button">Clear</button>
+          </div>
+        </div>
+        <p id="settings-error" class="error hidden"></p>
+        <menu>
+          <button value="cancel" formnovalidate>Cancel</button>
+          <button id="settings-save" value="save" class="primary">Save</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast hidden" role="status"></div>
+    <script src="app.js" type="module"></script>
+  </body>
+</html>

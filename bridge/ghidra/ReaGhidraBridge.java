@@ -1,14 +1,17 @@
 // REA's packaged, read-only Ghidra headless bridge.
 // @category REA
 
+import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
 import java.math.BigInteger;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.StandardProtocolFamily;
+import java.net.StandardSocketOptions;
 import java.net.UnixDomainSocketAddress;
 import java.nio.channels.Channels;
 import java.nio.channels.ServerSocketChannel;
@@ -27,6 +30,7 @@ import java.security.MessageDigest;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -56,6 +60,11 @@ import ghidra.app.decompiler.DecompileResults;
 import ghidra.app.decompiler.DecompiledFunction;
 import ghidra.app.decompiler.ClangCaseToken;
 import ghidra.app.decompiler.ClangNode;
+import ghidra.app.decompiler.parallel.DecompilerCallback;
+import generic.concurrent.ConcurrentQ;
+import generic.concurrent.ConcurrentQBuilder;
+import generic.concurrent.QResult;
+import ghidra.util.task.TaskMonitor;
 import ghidra.framework.Application;
 import ghidra.app.util.bin.format.pdb.PdbParserConstants;
 import ghidra.framework.options.Options;
@@ -119,6 +128,14 @@ public final class ReaGhidraBridge extends HeadlessScript {
     private static final int MAX_HIGH_PCODE_INPUTS_PER_OP = 64;
     private static final int MAX_HIGH_PCODE_DEF_USE_EDGES = 12000;
     private static final Gson GSON = new GsonBuilder().serializeNulls().create();
+    /** Recently decompiled functions retained for repeat views and dossiers. */
+    private static final int DECOMPILE_CACHE_ENTRIES = 256;
+    /** Upper bound on selectors accepted by one parallel prefetch request. */
+    private static final int MAX_PREFETCH_PROCEDURES = 512;
+    /** Decompiler processes kept for prefetch windows, at most one per core. */
+    private static final int MAX_PREFETCH_WORKERS = 8;
+    private static final String PREFETCH_THREAD_POOL = "REA Decompiler";
+    private static final int SOCKET_BUFFER_BYTES = 1 << 16;
     private final Map<FileBytes, Boolean> targetSourceIdentity = new IdentityHashMap<>();
     private String admittedTargetSha256;
     private static final Set<String> DESCRIPTOR_KEYS = Set.of(
@@ -173,7 +190,18 @@ public final class ReaGhidraBridge extends HeadlessScript {
     private List<InventoryItem> nameInventory;
     private List<FunctionEntry> procedureInventory;
     private List<InventoryItem> stringInventory;
+    private Map<String, List<Function>> procedureNameIndex;
+    private long procedureNameIndexModification = -1;
     private DecompInterface decompiler;
+    /**
+     * Pooled decompilers for prefetch windows. Each one is a native process that
+     * loads the language before its first function, so the pool lives as long as
+     * the Program state it was opened on rather than one window.
+     */
+    private DecompilerCallback<PrefetchedText> prefetchWorkers;
+    /** Seconds before one decompilation is abandoned; 0 waits indefinitely. */
+    private int decompileTimeoutSeconds;
+    private final DecompileCache decompileCache = new DecompileCache(DECOMPILE_CACHE_ENTRIES);
     private final ReaGhidraExtensions analysisExtensions = new ReaGhidraExtensions();
     private static AddressSpace sessionDefaultAddressSpace;
 
@@ -224,6 +252,7 @@ public final class ReaGhidraBridge extends HeadlessScript {
             );
         }
         admittedTargetSha256 = descriptor.targetSha256;
+        decompileTimeoutSeconds = descriptor.decompileTimeoutSeconds;
         // GhidraScript wraps run() in a transaction. End it before serving so
         // each edit owns a real outer transaction and can roll back immediately.
         end(true);
@@ -235,6 +264,7 @@ public final class ReaGhidraBridge extends HeadlessScript {
             serve(descriptor);
         }
         finally {
+            disposePrefetchWorkers();
             if (decompiler != null) {
                 decompiler.dispose();
                 decompiler = null;
@@ -312,14 +342,28 @@ public final class ReaGhidraBridge extends HeadlessScript {
     private void acceptClient(
             ServerSocketChannel server,
             SessionDescriptor descriptor) throws Exception {
-        try (SocketChannel client = server.accept();
-             BufferedReader reader = new BufferedReader(
-                 Channels.newReader(client, StandardCharsets.UTF_8)
-             );
-             BufferedWriter writer = new BufferedWriter(
-                 Channels.newWriter(client, StandardCharsets.UTF_8)
-             )) {
-            serveClient(descriptor, reader, writer);
+        try (SocketChannel client = server.accept()) {
+            if (descriptor.transport.equals("authenticated-loopback-tcp")) {
+                // Responses end with a small trailing segment; without this the
+                // sender waits for the client's delayed ACK on Windows loopback.
+                client.setOption(StandardSocketOptions.TCP_NODELAY, true);
+            }
+            try (BufferedReader reader = new BufferedReader(
+                     Channels.newReader(client, StandardCharsets.UTF_8),
+                     SOCKET_BUFFER_BYTES
+                 );
+                 BufferedWriter writer = new BufferedWriter(
+                     new OutputStreamWriter(
+                         new BufferedOutputStream(
+                             Channels.newOutputStream(client),
+                             SOCKET_BUFFER_BYTES
+                         ),
+                         StandardCharsets.UTF_8
+                     ),
+                     SOCKET_BUFFER_BYTES
+                 )) {
+                serveClient(descriptor, reader, writer);
+            }
         }
     }
 
@@ -394,6 +438,9 @@ public final class ReaGhidraBridge extends HeadlessScript {
             case "procedure_callers" -> procedureCalls(request.params, true);
             case "procedure_info" -> procedureInfo(request.params);
             case "procedure_pseudo_code" -> procedurePseudocode(request.params);
+            // Unadvertised: warms the decompile cache across cores before the
+            // client issues the matching procedure_pseudo_code requests.
+            case "prefetch_pseudo_code" -> prefetchPseudocode(request.params);
             case "read_function_instructions" -> readFunctionInstructions(request.params);
             case "procedure_references" -> procedureReferences(request.params);
             case "resolve_containing_procedure" -> containingProcedure(request.params);
@@ -860,14 +907,19 @@ public final class ReaGhidraBridge extends HeadlessScript {
         return result;
     }
 
-    private void initializeDecompiler() {
+    /** Shared by the session decompiler and parallel prefetch workers. */
+    private static void configureDecompiler(DecompInterface target) {
         DecompileOptions options = new DecompileOptions();
         options.setMaxInstructions(Integer.MAX_VALUE);
+        target.setOptions(options);
+        target.toggleCCode(true);
+        target.toggleSyntaxTree(true);
+        target.toggleJumpLoads(true);
+    }
+
+    private void initializeDecompiler() {
         decompiler = new DecompInterface();
-        decompiler.setOptions(options);
-        decompiler.toggleCCode(true);
-        decompiler.toggleSyntaxTree(true);
-        decompiler.toggleJumpLoads(true);
+        configureDecompiler(decompiler);
         if (!decompiler.openProgram(currentProgram)) {
             throw new IllegalStateException("Ghidra decompiler could not open the imported Program");
         }
@@ -880,7 +932,7 @@ public final class ReaGhidraBridge extends HeadlessScript {
         JsonObject selection = new JsonObject();
         Function function = resolveDecompileProcedure(selector, selection);
         try {
-            String value = decompiledText(decompile(function));
+            String value = pseudocode(function);
             JsonObject result = functionObservation(
                 value == null ? JsonNull.INSTANCE : GSON.toJsonTree(value),
                 noReturnCallLimitations(
@@ -1364,7 +1416,10 @@ public final class ReaGhidraBridge extends HeadlessScript {
         nameInventory = null;
         procedureInventory = null;
         stringInventory = null;
+        procedureNameIndex = null;
+        decompileCache.clear();
         if (decompiler != null) decompiler.flushCache();
+        disposePrefetchWorkers();
     }
 
     private JsonObject annotationReadback(Function function) {
@@ -2113,27 +2168,7 @@ public final class ReaGhidraBridge extends HeadlessScript {
         // exact symbol name, even when every character is a hexadecimal digit.
         boolean explicitAddress = isExplicitReaAddress(value);
         if (!explicitAddress) {
-            List<Function> matches = new ArrayList<>();
-            for (FunctionEntry entry : procedures()) {
-                monitor.checkCancelled();
-                Function function = entry.function;
-                Symbol symbol = function.getSymbol();
-                String qualified = symbol == null ? function.getName() : symbol.getName(true);
-                boolean matchesName = function.getName().equals(value) || qualified.equals(value);
-                if (!matchesName) {
-                    // Imported labels (for example Mach-O _main) can share a
-                    // function entry without becoming its primary symbol. Only
-                    // exact entries qualify; an interior label is not a selector.
-                    for (Symbol entrySymbol : currentProgram.getSymbolTable().getSymbols(function.getEntryPoint())) {
-                        monitor.checkCancelled();
-                        if (entrySymbol.getName().equals(value) || entrySymbol.getName(true).equals(value)) {
-                            matchesName = true;
-                            break;
-                        }
-                    }
-                }
-                if (matchesName) matches.add(function);
-            }
+            List<Function> matches = procedureNameIndex().getOrDefault(value, List.of());
             if (matches.size() > 1)
                 throw new RequestFailure("ambiguous", "Ghidra procedure name is ambiguous: " + value +
                     "; select an exact entry address from " + matches.stream()
@@ -2154,6 +2189,40 @@ public final class ReaGhidraBridge extends HeadlessScript {
                 "and rea inspect-native-load-image <path> --provider ghidra --json, or MCP binary_overview and inspect_native_load_image. " +
                 "Repeat the original target options. For decompile, select source coordinates explicitly with --file-offset=0x... or MCP procedure file-offset:0x....");
         return function;
+    }
+
+    /**
+     * Exact selector names mapped to functions in inventory order. A function is
+     * reachable by its name, its qualified primary symbol, and every symbol at
+     * its entry: imported labels (for example Mach-O _main) can share a function
+     * entry without becoming its primary symbol. Interior labels never qualify.
+     * Built once per Program modification instead of scanning every function and
+     * its entry symbols for each name lookup.
+     */
+    private Map<String, List<Function>> procedureNameIndex() throws Exception {
+        long modification = currentProgram.getModificationNumber();
+        if (procedureNameIndex != null && procedureNameIndexModification == modification)
+            return procedureNameIndex;
+        Map<String, List<Function>> index = new HashMap<>();
+        SymbolTable symbolTable = currentProgram.getSymbolTable();
+        for (FunctionEntry entry : procedures()) {
+            monitor.checkCancelled();
+            Function function = entry.function;
+            Set<String> names = new HashSet<>();
+            names.add(function.getName());
+            Symbol symbol = function.getSymbol();
+            names.add(symbol == null ? function.getName() : symbol.getName(true));
+            for (Symbol entrySymbol : symbolTable.getSymbols(function.getEntryPoint())) {
+                monitor.checkCancelled();
+                names.add(entrySymbol.getName());
+                names.add(entrySymbol.getName(true));
+            }
+            for (String name : names)
+                index.computeIfAbsent(name, ignored -> new ArrayList<>()).add(function);
+        }
+        procedureNameIndex = index;
+        procedureNameIndexModification = modification;
+        return index;
     }
 
     private Function functionAtOrContaining(Address address) {
@@ -3229,13 +3298,49 @@ public final class ReaGhidraBridge extends HeadlessScript {
         if (function.isExternal() || function.getBody().isEmpty()) {
             return null;
         }
+        long modification = currentProgram.getModificationNumber();
+        CachedDecompile cached = decompileCache.get(function.getEntryPoint(), modification);
+        if (cached != null && cached.results() != null) {
+            return cached.results();
+        }
         DecompileResults results = decompiler.decompileFunction(
             function,
-            0,
+            decompileTimeoutSeconds,
             monitor
         );
+        requireCompletedDecompile(results);
+        decompileCache.put(
+            function.getEntryPoint(),
+            new CachedDecompile(results, decompiledText(results), modification)
+        );
+        return results;
+    }
+
+    /** Decompiled C for one function, served from the cache when current. */
+    private String pseudocode(Function function) {
+        if (function.isExternal() || function.getBody().isEmpty()) {
+            return null;
+        }
+        CachedDecompile cached = decompileCache.get(
+            function.getEntryPoint(),
+            currentProgram.getModificationNumber()
+        );
+        if (cached != null) {
+            return cached.text();
+        }
+        return decompiledText(decompile(function));
+    }
+
+    private void requireCompletedDecompile(DecompileResults results) {
         if (results.isCancelled()) {
             throw new RequestFailure("decompile_cancelled", "Ghidra decompilation was cancelled");
+        }
+        if (results.isTimedOut()) {
+            throw new RequestFailure(
+                "decompile_failed",
+                "Ghidra decompilation timed out after " + decompileTimeoutSeconds +
+                    " seconds; raise REA_GHIDRA_DECOMPILE_TIMEOUT_SECONDS or set it to 0 to wait indefinitely"
+            );
         }
         if (!results.decompileCompleted()) {
             throw new RequestFailure(
@@ -3243,7 +3348,122 @@ public final class ReaGhidraBridge extends HeadlessScript {
                 "Ghidra decompilation failed: " + diagnosticMessage(results.getErrorMessage())
             );
         }
-        return results;
+    }
+
+    /**
+     * Decompile the selected functions in parallel and retain their C text so
+     * the following procedure_pseudo_code requests are answered from memory.
+     * Selection and decompile failures are counted, not raised: the per-function
+     * request that follows reports them with its normal error contract.
+     */
+    private JsonElement prefetchPseudocode(JsonObject params) throws Exception {
+        requireKeys(params, Set.of("document", "procedures"));
+        requireDocument(params);
+        JsonElement selectors = params.get("procedures");
+        if (selectors == null || !selectors.isJsonArray() ||
+                selectors.getAsJsonArray().size() > MAX_PREFETCH_PROCEDURES)
+            throw new RequestFailure("invalid_request",
+                "procedures must be an array of at most " + MAX_PREFETCH_PROCEDURES + " selectors");
+        long modification = currentProgram.getModificationNumber();
+        Map<Address, Function> pending = new LinkedHashMap<>();
+        int unresolved = 0;
+        int alreadyCached = 0;
+        for (JsonElement element : selectors.getAsJsonArray()) {
+            monitor.checkCancelled();
+            if (!element.isJsonPrimitive() || !element.getAsJsonPrimitive().isString()) {
+                unresolved++;
+                continue;
+            }
+            Function function;
+            try {
+                function = resolveDecompileProcedure(element.getAsString(), new JsonObject());
+            } catch (RequestFailure failure) {
+                unresolved++;
+                continue;
+            }
+            if (function.isExternal() || function.getBody().isEmpty()) continue;
+            if (decompileCache.get(function.getEntryPoint(), modification) != null) {
+                alreadyCached++;
+                continue;
+            }
+            pending.putIfAbsent(function.getEntryPoint(), function);
+        }
+        int decompiled = 0;
+        int failed = 0;
+        if (pending.size() == 1) {
+            try {
+                decompile(pending.values().iterator().next());
+                decompiled++;
+            } catch (RequestFailure failure) {
+                failed++;
+            }
+        }
+        else if (!pending.isEmpty()) {
+            ConcurrentQ<Function, PrefetchedText> queue = new ConcurrentQBuilder<Function, PrefetchedText>()
+                .setThreadPoolName(PREFETCH_THREAD_POOL)
+                .setMaxInProgress(Math.max(1,
+                    Math.min(Runtime.getRuntime().availableProcessors(), MAX_PREFETCH_WORKERS)))
+                .setCollectResults(true)
+                .setMonitor(monitor)
+                .build(prefetchWorkers());
+            Collection<QResult<Function, PrefetchedText>> produced;
+            try {
+                queue.add(pending.values());
+                produced = queue.waitForResults();
+            } finally {
+                queue.dispose();
+            }
+            Set<Address> stored = new HashSet<>();
+            if (currentProgram.getModificationNumber() == modification) {
+                for (QResult<Function, PrefetchedText> outcome : produced) {
+                    PrefetchedText item;
+                    try {
+                        item = outcome.getResult();
+                    } catch (Exception failure) {
+                        continue;
+                    }
+                    if (item == null || !pending.containsKey(item.entry())) continue;
+                    decompileCache.put(item.entry(), new CachedDecompile(null, item.text(), modification));
+                    stored.add(item.entry());
+                }
+            }
+            decompiled = stored.size();
+            failed = pending.size() - stored.size();
+        }
+        JsonObject result = new JsonObject();
+        result.addProperty("requested", selectors.getAsJsonArray().size());
+        result.addProperty("unresolved", unresolved);
+        result.addProperty("already_cached", alreadyCached);
+        result.addProperty("decompiled", decompiled);
+        result.addProperty("failed", failed);
+        return result;
+    }
+
+    private DecompilerCallback<PrefetchedText> prefetchWorkers() {
+        if (prefetchWorkers == null) {
+            prefetchWorkers = new DecompilerCallback<>(currentProgram, ReaGhidraBridge::configureDecompiler) {
+                @Override
+                public PrefetchedText process(DecompileResults results, TaskMonitor workerMonitor) {
+                    // Text is extracted while the worker's decompiler is alive;
+                    // syntax trees stay with the session decompiler only.
+                    if (results == null || !results.decompileCompleted() || results.isTimedOut())
+                        return null;
+                    String text = decompiledText(results);
+                    return text == null ? null :
+                        new PrefetchedText(results.getFunction().getEntryPoint(), text);
+                }
+            };
+            prefetchWorkers.setTimeout(decompileTimeoutSeconds);
+        }
+        return prefetchWorkers;
+    }
+
+    /** Pooled decompilers cache Program facts, so they end with the state they saw. */
+    private void disposePrefetchWorkers() {
+        if (prefetchWorkers != null) {
+            prefetchWorkers.dispose();
+            prefetchWorkers = null;
+        }
     }
 
     private static String decompiledText(DecompileResults results) {
@@ -4302,7 +4522,13 @@ public final class ReaGhidraBridge extends HeadlessScript {
         Set<String> keys = new HashSet<>(DESCRIPTOR_KEYS);
         if (parsed.isJsonObject() && parsed.getAsJsonObject().has("analysis_extensions"))
             keys.add("analysis_extensions");
+        if (parsed.isJsonObject() && parsed.getAsJsonObject().has("decompile_timeout_seconds"))
+            keys.add("decompile_timeout_seconds");
         JsonObject object = requireObject(parsed, keys);
+        int decompileTimeout = object.has("decompile_timeout_seconds")
+            ? requireInteger(object, "decompile_timeout_seconds") : 0;
+        if (decompileTimeout < 0 || decompileTimeout > 86400)
+            throw new IllegalArgumentException("REA session decompile timeout is invalid");
         return new SessionDescriptor(
             requireString(object, "transport"),
             requireString(object, "endpoint_path"),
@@ -4311,7 +4537,8 @@ public final class ReaGhidraBridge extends HeadlessScript {
             requireSha256(object, "target_sha256"),
             requireString(object, "provider_version"),
             requireString(object, "profile_digest"),
-            object.has("analysis_extensions") ? object.getAsJsonArray("analysis_extensions") : new JsonArray()
+            object.has("analysis_extensions") ? object.getAsJsonArray("analysis_extensions") : new JsonArray(),
+            decompileTimeout
         );
     }
 
@@ -4515,8 +4742,49 @@ public final class ReaGhidraBridge extends HeadlessScript {
         String targetSha256,
         String providerVersion,
         String profileDigest,
-        JsonArray analysisExtensions
+        JsonArray analysisExtensions,
+        int decompileTimeoutSeconds
     ) {}
+    /**
+     * One decompilation retained for reuse. Session-decompiler entries keep the
+     * full results for dossiers; prefetched entries keep only the C text.
+     */
+    private record CachedDecompile(DecompileResults results, String text, long modification) {}
+    private record PrefetchedText(Address entry, String text) {}
+
+    /** Access-ordered LRU invalidated by any Program modification. */
+    private static final class DecompileCache {
+        private final int capacity;
+        private final LinkedHashMap<Address, CachedDecompile> entries;
+
+        DecompileCache(int capacity) {
+            this.capacity = capacity;
+            this.entries = new LinkedHashMap<>(capacity, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<Address, CachedDecompile> eldest) {
+                    return size() > DecompileCache.this.capacity;
+                }
+            };
+        }
+
+        CachedDecompile get(Address entry, long modification) {
+            CachedDecompile cached = entries.get(entry);
+            if (cached == null) return null;
+            if (cached.modification() != modification) {
+                entries.remove(entry);
+                return null;
+            }
+            return cached;
+        }
+
+        void put(Address entry, CachedDecompile value) {
+            entries.put(entry, value);
+        }
+
+        void clear() {
+            entries.clear();
+        }
+    }
     private record Request(int id, String method, JsonObject params) {}
 
     private static final class RequestFailure extends RuntimeException {

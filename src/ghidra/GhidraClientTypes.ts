@@ -44,6 +44,8 @@ export interface GhidraClientOptions {
   readonly expectedLanguageId?: string;
   readonly expectedCompilerSpecId?: string;
   readonly startupTimeoutMs?: number;
+  /** False sends every pseudocode request alone instead of prefetching. */
+  readonly parallelDecompile?: boolean;
   readonly onDiagnostic?: (event: GhidraDiagnostic) => void;
   readonly logger?: Logger;
 }

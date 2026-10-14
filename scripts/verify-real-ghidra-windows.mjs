@@ -204,6 +204,20 @@ try {
       "Windows loaded bytes disagree with the observed source-file mapping",
     );
 
+  // The procedure's own leading bytes, searched from its entry, match there.
+  const signature = await inventory("search_bytes", {
+    pattern: memory.bytes_hex.slice(0, 16).match(/../gu).join(" "),
+    start: procedure.address,
+    limit: 1,
+  });
+  if (
+    signature.matches.length !== 1 ||
+    BigInt(signature.matches[0].address) !== BigInt(procedure.address)
+  )
+    throw new Error(
+      "Windows byte search did not find the procedure's bytes at its entry",
+    );
+
   await inventory("address_name", { address: procedure.address });
   const resolvedAddress = await inventory("procedure_address", {
     procedure: procedure.value,

@@ -3,20 +3,17 @@
   "entry": [
     "src/main.ts",
     "src/cli.ts",
+    "src/desktopMain.ts",
     "src/composition/javascriptAnalysisWorkerProcess.ts",
     "src/contracts/errorSchemas.ts",
     "src/evaluation/AgentEvaluationFixtures.ts",
     "src/application/RealHopperAssertions.ts",
     "scripts/verify/fridaBindingsCompatibility.ts",
-    "scripts/verify/termux/browser.mjs",
     "scripts/verify-real-ghidra-noreturn.mjs",
     "tests/processOwnershipRunner.ts"
   ],
   "project": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.mjs"],
-  "vitepress": {
-    "entry": ["docs/.vitepress/config.ts"]
-  },
-  "ignoreBinaries": ["mkfifo"],
+  "ignoreBinaries": ["mkfifo", "zenity"],
   "ignoreDependencies": ["electron", "esbuild", "webpack"],
   "ignoreExportsUsedInFile": true,
   "rules": {

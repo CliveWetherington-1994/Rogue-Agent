@@ -1,6 +1,7 @@
 import { snapshotEnvironment } from "../process/snapshotEnvironment.js";
 import { dirname, join } from "node:path";
 import { execFileOutput } from "../process/ExecFileOutput.js";
+import { ghidraJvmTuning, type GhidraJvmHost } from "./GhidraJvmTuning.js";
 
 /** Launch coordinates obtained from Ghidra's own release configuration helper. */
 export const ghidraJavaLaunch = async (options: {
@@ -12,6 +13,8 @@ export const ghidraJavaLaunch = async (options: {
   readonly tempRoot: string;
   readonly arguments: readonly string[];
   readonly environment: NodeJS.ProcessEnv;
+  /** Host budget seam; defaults to the current machine. */
+  readonly host?: GhidraJvmHost;
   readonly signal?: AbortSignal;
   readonly onStderr: (mode: "-envvars" | "-vmargs", stderr: string) => void;
 }): Promise<{
@@ -83,15 +86,15 @@ export const ghidraJavaLaunch = async (options: {
     )
   )
     throw new Error("Invalid Ghidra LaunchSupport JVM argument");
+  const tuning = ghidraJvmTuning(environment, options.host);
   return {
     command,
     environment,
     arguments: [
       ...vmArguments,
       ...(options.platform === "darwin" ? ["-Xdock:name=Ghidra-Headless"] : []),
-      `-Xmx${environment.GHIDRA_HEADLESS_MAXMEM || environment.GHIDRA_MAXMEM || "2G"}`,
-      "-XX:ParallelGCThreads=2",
-      "-XX:CICompilerCount=2",
+      `-Xmx${tuning.maxHeap}`,
+      ...tuning.options,
       "-Djava.awt.headless=true",
       ...isolatedProperties,
       "-showversion",
