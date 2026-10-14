@@ -6,10 +6,13 @@
 //
 // --engine may point at any checkout with the same dist layout (for example
 // upstream morluto/rea) so both are measured with identical requests. Extra
-// environment for the engine: --env KEY=VALUE (repeatable).
+// environment for the engine: --env KEY=VALUE (repeatable). Unless one is
+// given, the analysis cache lives in a fresh directory for this run only, so
+// the first open is always a cold analysis.
 
 import { createHash } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
@@ -43,6 +46,12 @@ for (const pair of values.env) {
   const separator = pair.indexOf("=");
   environment[pair.slice(0, separator)] = pair.slice(separator + 1);
 }
+const scratchCache =
+  environment.REA_GHIDRA_ANALYSIS_CACHE_DIR === undefined
+    ? await mkdtemp(join(tmpdir(), "rea-bench-cache-"))
+    : undefined;
+if (scratchCache !== undefined)
+  environment.REA_GHIDRA_ANALYSIS_CACHE_DIR = scratchCache;
 const config = parseConfig(environment);
 if (!config.ok)
   throw new Error(errors.projectAnalysisError(config.error).message);
@@ -158,7 +167,7 @@ try {
 
   // 4. Name resolution (decompile by symbol, xrefs by name, batch identity).
   const named = sample(Number(values.names), 0.75).filter(
-    (item) => !/^FUN_/u.test(item.value),
+    (item) => !item.value.startsWith("FUN_"),
   );
   started = now();
   for (const item of named)
@@ -211,6 +220,8 @@ if (report.batch !== undefined) {
     await reopened.close();
   }
 }
+if (scratchCache !== undefined)
+  await rm(scratchCache, { recursive: true, force: true });
 
 const rounded = JSON.parse(
   JSON.stringify(report, (key, value) =>
