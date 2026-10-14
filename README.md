@@ -22,7 +22,7 @@ system-wide, and your own Java or Ghidra is left alone. To use your own
 Ghidra or JDK instead, choose its folder in **Settings**; clear the field to
 go back to the bundled one. The bundled Ghidra omits its documentation,
 optional extensions, source archives and non-Windows binaries, none of which
-analysis uses. The portable zip is about 480 MB.
+analysis uses. The installer is about 380 MB and the portable zip about 480 MB.
 
 Windows 10 1809 or newer and the Microsoft Edge WebView2 Runtime are required.
 WebView2 is preinstalled on Windows 11. Without it, Rogue Agent offers to run
