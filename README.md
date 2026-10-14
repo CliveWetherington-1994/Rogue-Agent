@@ -14,11 +14,15 @@ investigate binaries too.
 
 1. Download `RogueAgent-<version>-Setup-x64.exe` (or the portable `.zip`) from
    the latest CI run or release. It installs per user, with no admin rights.
-2. Install [Ghidra 12.1.x](https://github.com/NationalSecurityAgency/ghidra/releases)
-   (unzip it anywhere) and a 64-bit JDK 21+, such as
-   [Temurin](https://adoptium.net/).
-3. Start **Rogue Agent**. It finds Ghidra and the JDK in the usual places. If
-   it doesn't, choose the folders in **Settings**.
+2. Start **Rogue Agent** and open a binary.
+
+Ghidra 12.1.4 and the Eclipse Temurin JDK 21 come with the app, in its
+`ghidra` and `jdk` folders. They are private copies: nothing is installed
+system-wide, and your own Java or Ghidra is left alone. To use your own
+Ghidra or JDK instead, choose its folder in **Settings**; clear the field to
+go back to the bundled one. The bundled Ghidra omits its documentation,
+optional extensions, source archives and non-Windows binaries, none of which
+analysis uses. The portable zip is about 480 MB.
 
 Windows 10 1809 or newer and the Microsoft Edge WebView2 Runtime are required.
 WebView2 is preinstalled on Windows 11. Without it, Rogue Agent offers to run

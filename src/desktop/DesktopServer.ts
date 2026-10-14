@@ -239,17 +239,16 @@ export const startDesktopServer = async (
     }
   };
 
+  const discovery =
+    options.applicationDirectory === undefined
+      ? {}
+      : { applicationDirectory: options.applicationDirectory };
   const environmentReport = async () => ({
     platform: process.platform,
     version: options.version,
     settings: settings.current,
-    ghidra: await discoverGhidraInstallations(
-      options.environment,
-      options.applicationDirectory === undefined
-        ? {}
-        : { applicationDirectory: options.applicationDirectory },
-    ),
-    java: await discoverJavaHomes(options.environment),
+    ghidra: await discoverGhidraInstallations(options.environment, discovery),
+    java: await discoverJavaHomes(options.environment, discovery),
   });
 
   const absolutePathBody = z.strictObject({

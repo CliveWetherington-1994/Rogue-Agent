@@ -7,10 +7,17 @@
 //     rea.cmd                   CLI / MCP entry for agents (`rea.cmd mcp`)
 //     runtime/node.exe          pinned Node.js runtime (SHA-256 verified)
 //     app/                      compiled engine, bridge, UI, production deps
+//     ghidra/                   bundled Ghidra release (SHA-256 verified)
+//     jdk/                      bundled Temurin JDK for Ghidra (SHA-256 verified)
 //
 // Run after `npm run build` and `npm run build:windows-native`. Works on Linux
 // (cross-build) and Windows. Usage:
 //   node scripts/desktop/package-windows.mjs --launcher <RogueAgent.exe> [--out out] [--zip]
+//     [--no-bundled-tools] [--tools-cache <dir>]
+//
+// Ghidra and the JDK are pinned in desktop/packaging/bundled-tools.json. Parts
+// the app never reads (documentation, uninstalled extensions, source archives,
+// non-Windows native binaries, JDK jmods) are left out.
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -21,17 +28,33 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rename,
   rm,
   stat,
   writeFile,
 } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import {
+  createReadStream,
+  createWriteStream,
+  existsSync,
+  openAsBlob,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
+import { Readable, Writable } from "node:stream";
+import { finished, pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import {
+  BlobReader,
   Uint8ArrayReader,
   Uint8ArrayWriter,
   ZipReader,
@@ -49,6 +72,11 @@ const { values } = parseArgs({
       default: join(root, ".cache", "node-runtime"),
     },
     zip: { type: "boolean", default: false },
+    "no-bundled-tools": { type: "boolean", default: false },
+    "tools-cache": {
+      type: "string",
+      default: join(root, ".cache", "bundled-tools"),
+    },
   },
 });
 
@@ -146,6 +174,76 @@ if (archive === undefined || sha256(archive) !== expected) {
     fail(`${nodeArchiveName} failed SHA-256 verification`);
   await writeFile(nodeArchivePath, archive);
 }
+
+// ----------------------------------------------------------- bundled tools
+
+const sha256File = (path) =>
+  new Promise((resolveDigest, reject) => {
+    const hash = createHash("sha256");
+    createReadStream(path)
+      .on("data", (chunk) => hash.update(chunk))
+      .on("error", reject)
+      .on("end", () => resolveDigest(hash.digest("hex")));
+  });
+
+/** The pinned archive from the cache, downloading and verifying it if needed. */
+const fetchVerified = async (tool) => {
+  await mkdir(values["tools-cache"], { recursive: true });
+  const path = join(
+    values["tools-cache"],
+    `${tool.sha256}-${basename(new URL(tool.url).pathname)}`,
+  );
+  if ((await exists(path)) && (await sha256File(path)) === tool.sha256)
+    return path;
+  log(`downloading ${tool.name} ${tool.version}`);
+  const response = await fetch(tool.url);
+  if (!response.ok || response.body === null)
+    fail(`download failed (${response.status}): ${tool.url}`);
+  const partial = `${path}.partial`;
+  await pipeline(Readable.fromWeb(response.body), createWriteStream(partial));
+  if ((await sha256File(partial)) !== tool.sha256) {
+    await rm(partial, { force: true });
+    fail(`${tool.name} ${tool.version} failed SHA-256 verification`);
+  }
+  await rename(partial, path);
+  return path;
+};
+
+/** Extract the archive's release directory into `destination`, minus exclusions. */
+const unpackTool = async (tool, archive, destination) => {
+  const excluded = tool.exclude.map((pattern) => new RegExp(pattern, "u"));
+  const reader = new ZipReader(new BlobReader(await openAsBlob(archive)));
+  let files = 0;
+  for (const entry of await reader.getEntries()) {
+    if (entry.directory) continue;
+    if (!entry.filename.startsWith(tool.root))
+      fail(`${tool.name} archive has an unexpected entry: ${entry.filename}`);
+    const name = entry.filename.slice(tool.root.length);
+    if (name === "" || excluded.some((pattern) => pattern.test(name))) continue;
+    const target = join(destination, ...name.split("/"));
+    const inside = relative(destination, target);
+    if (inside.startsWith("..") || isAbsolute(inside))
+      fail(`${tool.name} archive entry escapes its directory: ${name}`);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, await entry.getData(new Uint8ArrayWriter()));
+    files++;
+  }
+  await reader.close();
+  return files;
+};
+
+const bundledTools = values["no-bundled-tools"]
+  ? undefined
+  : JSON.parse(
+      await readFile(
+        join(root, "desktop/packaging/bundled-tools.json"),
+        "utf8",
+      ),
+    );
+const toolArchives = {};
+if (bundledTools !== undefined)
+  for (const [key, tool] of Object.entries(bundledTools))
+    toolArchives[key] = await fetchVerified(tool);
 
 // ------------------------------------------------------------------ staging
 
@@ -300,7 +398,17 @@ await prune(join(app, "node_modules"));
 
 await writeFile(
   join(staging, "rea.cmd"),
-  '@echo off\r\n"%~dp0runtime\\node.exe" "%~dp0app\\scripts\\rea.mjs" %*\r\n',
+  [
+    "@echo off",
+    "setlocal",
+    // The bundled Ghidra and JDK serve unless the caller chose a Ghidra.
+    'if not defined GHIDRA_INSTALL_DIR if exist "%~dp0ghidra\\support\\analyzeHeadless.bat" (',
+    '  set "GHIDRA_INSTALL_DIR=%~dp0ghidra"',
+    '  if exist "%~dp0jdk\\bin\\javac.exe" set "JAVA_HOME=%~dp0jdk"',
+    ")",
+    '"%~dp0runtime\\node.exe" "%~dp0app\\scripts\\rea.mjs" %*',
+    "",
+  ].join("\r\n"),
 );
 await writeFile(
   join(staging, "README.txt"),
@@ -308,10 +416,10 @@ await writeFile(
     "Rogue Agent",
     "===========",
     "",
-    "Start RogueAgent.exe. On first run, open Settings and choose your Ghidra 12.1.x",
-    "folder (https://github.com/NationalSecurityAgency/ghidra/releases) and a JDK 21+",
-    "(https://adoptium.net/). Both are detected automatically when installed in the",
-    "usual places.",
+    "Start RogueAgent.exe and open a binary. Ghidra and a JDK are included",
+    "(ghidra\\ and jdk\\); to use your own instead, choose their folders in",
+    "Settings. Builds made with --no-bundled-tools need Ghidra 12.1.x and JDK 21+",
+    "installed; both are detected automatically in the usual places.",
     "",
     "Agents can use the same engine over MCP:  rea.cmd mcp",
     "Command line:                             rea.cmd --help",
@@ -320,6 +428,30 @@ await writeFile(
     "",
   ].join("\r\n"),
 );
+
+if (bundledTools !== undefined) {
+  for (const [key, tool] of Object.entries(bundledTools)) {
+    log(`bundling ${tool.name} ${tool.version}`);
+    const files = await unpackTool(
+      tool,
+      toolArchives[key],
+      join(staging, tool.directory),
+    );
+    log(`  ${files} files in ${tool.directory}\\`);
+  }
+  for (const required of [
+    "ghidra/support/analyzeHeadless.bat",
+    "ghidra/Ghidra/application.properties",
+    "ghidra/Ghidra/Features/Decompiler/os/win_x86_64/decompile.exe",
+    "ghidra/LICENSE",
+    "jdk/bin/java.exe",
+    "jdk/bin/javac.exe",
+    "jdk/release",
+    "jdk/legal",
+  ])
+    if (!(await exists(join(staging, required))))
+      fail(`bundled tools are incomplete: ${required} is missing`);
+}
 
 const sizeOf = async (path) => {
   const info = await lstat(path);
@@ -338,7 +470,9 @@ if (values.zip) {
     resolve(values.out),
     `RogueAgent-${packageJson.version}-win-x64.zip`,
   );
-  const writer = new ZipWriter(new Uint8ArrayWriter(), { level: 6 });
+  // Streamed to disk: with Ghidra and the JDK the archive is several hundred MB.
+  const output = createWriteStream(zipPath);
+  const writer = new ZipWriter(Writable.toWeb(output), { level: 6 });
   const add = async (path) => {
     const info = await lstat(path);
     if (info.isSymbolicLink()) return;
@@ -347,20 +481,18 @@ if (values.zip) {
       for (const entry of await readdir(path)) await add(join(path, entry));
       return;
     }
-    await writer.add(
-      name,
-      new Uint8ArrayReader(new Uint8Array(await readFile(path))),
-      {
-        lastModDate: info.mtime,
-      },
-    );
+    await writer.add(name, new BlobReader(await openAsBlob(path)), {
+      lastModDate: info.mtime,
+    });
   };
   await add(staging);
-  const bytes = await writer.close();
-  await writeFile(zipPath, bytes);
+  await writer.close();
+  await finished(output);
   await writeFile(
     `${zipPath}.sha256`,
-    `${sha256(bytes)}  ${basename(zipPath)}\n`,
+    `${await sha256File(zipPath)}  ${basename(zipPath)}\n`,
   );
-  log(`wrote ${zipPath} (${(bytes.length / 1024 / 1024).toFixed(1)} MiB)`);
+  log(
+    `wrote ${zipPath} (${((await stat(zipPath)).size / 1024 / 1024).toFixed(1)} MiB)`,
+  );
 }

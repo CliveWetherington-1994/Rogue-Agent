@@ -11,6 +11,8 @@ export interface DiscoveredGhidra {
   readonly version: string;
   /** Same major.minor line as the bridge's verified release. */
   readonly supported: boolean;
+  /** Shipped inside the application folder. */
+  readonly bundled?: true;
 }
 
 /** One JDK home found on this machine. */
@@ -18,7 +20,19 @@ export interface DiscoveredJava {
   readonly path: string;
   readonly version: string;
   readonly major: number;
+  /** Shipped inside the application folder. */
+  readonly bundled?: true;
 }
+
+/** Ghidra and the JDK the Windows package ships beside RogueAgent.exe. */
+export interface BundledTools {
+  readonly ghidra?: DiscoveredGhidra;
+  readonly java?: DiscoveredJava;
+}
+
+/** Folder names of the bundled tools inside the application directory. */
+const BUNDLED_GHIDRA = "ghidra";
+const BUNDLED_JAVA = "jdk";
 
 const exists = async (path: string): Promise<boolean> => {
   try {
@@ -126,8 +140,9 @@ const ghidraSearchRoots = (
 };
 
 /**
- * Find Ghidra releases in the places people usually unpack them. Explicit
- * configuration (`GHIDRA_INSTALL_DIR`) is listed first; others are newest first.
+ * Find Ghidra releases in the places people usually unpack them. The bundled
+ * release is listed first, then explicit configuration (`GHIDRA_INSTALL_DIR`),
+ * then others, newest first.
  */
 export const discoverGhidraInstallations = async (
   environment: Readonly<NodeJS.ProcessEnv>,
@@ -160,15 +175,21 @@ export const discoverGhidraInstallations = async (
     const inspected = await inspectGhidraDirectory(candidate, platform);
     if (inspected !== undefined) found.push(inspected);
   }
-  const explicit = found.filter(({ path }) => path === configured);
+  const { ghidra: bundled } = await findBundledTools(
+    options.applicationDirectory,
+    platform,
+  );
+  const explicit = found.filter(
+    ({ path }) => path === configured && path !== bundled?.path,
+  );
   const others = found
-    .filter(({ path }) => path !== configured)
+    .filter(({ path }) => path !== configured && path !== bundled?.path)
     .sort(
       (left, right) =>
         Number(right.supported) - Number(left.supported) ||
         compareVersionsDescending(left.version, right.version),
     );
-  return [...explicit, ...others];
+  return [...(bundled === undefined ? [] : [bundled]), ...explicit, ...others];
 };
 
 /** Read a JDK home's `release` file, or undefined when it is not a JDK. */
@@ -192,11 +213,44 @@ export const inspectJavaHome = async (
   }
 };
 
-/** Find full JDKs (Ghidra 12 needs 21+), configured JAVA_HOME first, newest first. */
+/**
+ * The Ghidra and JDK shipped in the application directory, when present and
+ * usable. Settings that name other folders take precedence over them.
+ */
+export const findBundledTools = async (
+  applicationDirectory: string | undefined,
+  platform: NodeJS.Platform = process.platform,
+): Promise<BundledTools> => {
+  if (applicationDirectory === undefined || !isAbsolute(applicationDirectory))
+    return {};
+  const ghidra = await inspectGhidraDirectory(
+    join(applicationDirectory, BUNDLED_GHIDRA),
+    platform,
+  );
+  const java = await inspectJavaHome(
+    join(applicationDirectory, BUNDLED_JAVA),
+    platform,
+  );
+  return {
+    ...(ghidra === undefined ? {} : { ghidra: { ...ghidra, bundled: true } }),
+    ...(java === undefined || java.major < 21
+      ? {}
+      : { java: { ...java, bundled: true } }),
+  };
+};
+
+/**
+ * Find full JDKs (Ghidra 12 needs 21+): the bundled JDK, then the configured
+ * JAVA_HOME, then others, newest first.
+ */
 export const discoverJavaHomes = async (
   environment: Readonly<NodeJS.ProcessEnv>,
-  platform: NodeJS.Platform = process.platform,
+  options: {
+    readonly platform?: NodeJS.Platform;
+    readonly applicationDirectory?: string;
+  } = {},
 ): Promise<DiscoveredJava[]> => {
+  const platform = options.platform ?? process.platform;
   const home = homedir();
   const vendorRoots =
     platform === "win32"
@@ -230,14 +284,20 @@ export const discoverJavaHomes = async (
       if (platform === "darwin")
         candidates.add(join(child, "Contents", "Home"));
     }
+  const { java: bundled } = await findBundledTools(
+    options.applicationDirectory,
+    platform,
+  );
   const found: DiscoveredJava[] = [];
   for (const candidate of candidates) {
+    if (candidate === bundled?.path) continue;
     const inspected = await inspectJavaHome(candidate, platform);
     if (inspected !== undefined && inspected.major >= 21) found.push(inspected);
   }
-  return found.sort(
+  found.sort(
     (left, right) =>
       Number(right.path === configured) - Number(left.path === configured) ||
       compareVersionsDescending(left.version, right.version),
   );
+  return bundled === undefined ? found : [bundled, ...found];
 };

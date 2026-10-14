@@ -68,10 +68,21 @@ const CALLEE_PREFETCH_LIMIT = 16;
 const USAGE_LIMIT = 64;
 const EXPORT_CHUNK = 256;
 
-/** Environment handed to the engine's configuration parser for one session. */
+/** Folders of the Ghidra and JDK shipped with the application, when present. */
+export interface DesktopBundledPaths {
+  readonly ghidra?: string;
+  readonly java?: string;
+}
+
+/**
+ * Environment handed to the engine's configuration parser for one session.
+ * A folder chosen in Settings wins; otherwise the bundled Ghidra and JDK serve,
+ * and only without them does the inherited environment decide.
+ */
 export const desktopEngineEnvironment = (
   base: Readonly<NodeJS.ProcessEnv>,
   settings: DesktopSettings,
+  bundled: DesktopBundledPaths = {},
 ): NodeJS.ProcessEnv => {
   const environment: NodeJS.ProcessEnv = {
     ...base,
@@ -81,9 +92,10 @@ export const desktopEngineEnvironment = (
     ),
     REA_GHIDRA_ANALYSIS_CACHE: settings.analysisCache ? "on" : "off",
   };
-  if (settings.ghidraInstallDir !== null)
-    environment.GHIDRA_INSTALL_DIR = settings.ghidraInstallDir;
-  if (settings.javaHome !== null) environment.JAVA_HOME = settings.javaHome;
+  const ghidra = settings.ghidraInstallDir ?? bundled.ghidra;
+  if (ghidra !== undefined) environment.GHIDRA_INSTALL_DIR = ghidra;
+  const java = settings.javaHome ?? bundled.java;
+  if (java !== undefined) environment.JAVA_HOME = java;
   if (settings.idaMcpConfigPath !== null)
     environment.REA_IDA_MCP_CONFIG = settings.idaMcpConfigPath;
   return environment;
@@ -131,6 +143,7 @@ export class DesktopWorkspace {
   readonly #environment: Readonly<NodeJS.ProcessEnv>;
   readonly #logger: Logger;
   readonly #settings: () => DesktopSettings;
+  readonly #bundled: DesktopBundledPaths;
   readonly #listeners = new Set<Listener>();
   #engine: Promise<Engine> | undefined;
   #loadedEngine: Engine | undefined;
@@ -154,8 +167,10 @@ export class DesktopWorkspace {
     readonly environment: Readonly<NodeJS.ProcessEnv>;
     readonly logger: Logger;
     readonly settings: () => DesktopSettings;
+    readonly bundled?: DesktopBundledPaths;
   }) {
     this.#environment = options.environment;
+    this.#bundled = options.bundled ?? {};
     this.#logger = options.logger;
     this.#settings = options.settings;
   }
@@ -193,7 +208,11 @@ export class DesktopWorkspace {
       return this.#session;
     await this.#closeSession();
     const engine = await this.#getEngine();
-    const environment = desktopEngineEnvironment(this.#environment, settings);
+    const environment = desktopEngineEnvironment(
+      this.#environment,
+      settings,
+      this.#bundled,
+    );
     const config = engine.parseConfig(environment);
     if (!config.ok)
       throw new DesktopError(

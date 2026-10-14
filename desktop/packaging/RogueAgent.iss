@@ -29,8 +29,12 @@ MinVersion=10.0.17763
 OutputBaseFilename=RogueAgent-{#AppVersion}-Setup-x64
 SetupIconFile=..\launcher\assets\rogue-agent.ico
 UninstallDisplayIcon={app}\RogueAgent.exe
-Compression=lzma2/ultra64
+; About 1 GB with the bundled Ghidra and JDK: multithreaded LZMA2 keeps the
+; build to a few minutes.
+Compression=lzma2/max
 SolidCompression=yes
+LZMAUseSeparateProcess=yes
+LZMANumBlockThreads=4
 WizardStyle=modern
 LicenseFile=..\..\LICENSE
 ChangesAssociations=yes
@@ -41,6 +45,13 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "openwith"; Description: "Offer Rogue Agent in the ""Open with"" menu for programs and libraries"; GroupDescription: "Integration:"
+
+[InstallDelete]
+; An upgrade replaces these folders whole, so no file from an older Ghidra,
+; JDK or engine lingers beside the new one.
+Type: filesandordirs; Name: "{app}\app"
+Type: filesandordirs; Name: "{app}\ghidra"
+Type: filesandordirs; Name: "{app}\jdk"
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

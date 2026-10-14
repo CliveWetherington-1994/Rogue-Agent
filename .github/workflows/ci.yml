@@ -92,6 +92,21 @@ jobs:
       - name: Build RogueAgent.exe
         working-directory: desktop/launcher
         run: cargo build --release --target x86_64-pc-windows-gnu --locked
+      - name: Cross-check the pinned Ghidra digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pinned=$(node -p "require('./desktop/packaging/bundled-tools.json').ghidra.sha256")
+          url=$(node -p "require('./desktop/packaging/bundled-tools.json').ghidra.url")
+          tag=$(basename "$(dirname "$url")")
+          digest=$(gh api "repos/NationalSecurityAgency/ghidra/releases/tags/$tag" --jq ".assets[] | select(.name == \"$(basename "$url")\") | .digest")
+          echo "GitHub release digest: $digest; pinned: sha256:$pinned"
+          if [ -z "$digest" ] || [ "$digest" = "null" ]; then echo "::warning::GitHub reports no digest for the Ghidra asset"; exit 0; fi
+          [ "$digest" = "sha256:$pinned" ] || { echo "::error::pinned Ghidra SHA-256 differs from the release asset"; exit 1; }
+      - uses: actions/cache@v4
+        with:
+          path: .cache/bundled-tools
+          key: bundled-tools-${{ hashFiles('desktop/packaging/bundled-tools.json') }}
       - run: node scripts/desktop/package-windows.mjs --zip
       - name: Build benchmark target (SQLite shell for Windows)
         run: |
@@ -101,11 +116,13 @@ jobs:
           src=$(ls -d sqlite/sqlite-amalgamation-*)
           mkdir -p bench
           x86_64-w64-mingw32-gcc -O2 -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION "$src/sqlite3.c" "$src/shell.c" -o bench/sqlite3.exe
+      # With Ghidra and the JDK bundled these are about 1 GB each; keep two weeks.
       - uses: actions/upload-artifact@v4
         with:
           name: rogue-agent-win-x64
           path: out/RogueAgent-win-x64/
           if-no-files-found: error
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
           name: rogue-agent-zip
@@ -113,6 +130,8 @@ jobs:
             out/RogueAgent-*-win-x64.zip
             out/RogueAgent-*-win-x64.zip.sha256
           if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
           name: windows-native
@@ -128,7 +147,7 @@ jobs:
     name: Windows smoke test and installer
     needs: package
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -143,14 +162,16 @@ jobs:
           & "$app/rea.cmd" --version
           if ($LASTEXITCODE -ne 0) { throw "rea.cmd failed" }
           $psi = New-Object System.Diagnostics.ProcessStartInfo "$app/runtime/node.exe"
-          $psi.Arguments = "`"$app/app/scripts/rogue-agent-desktop.mjs`" --port 0 --exit-with-stdin"
+          $psi.Arguments = "`"$app/app/scripts/rogue-agent-desktop.mjs`" --port 0 --exit-with-stdin --app-dir `"$(Resolve-Path $app)`""
           $psi.RedirectStandardOutput = $true; $psi.RedirectStandardInput = $true; $psi.UseShellExecute = $false
           $server = [System.Diagnostics.Process]::Start($psi)
           $line = $server.StandardOutput.ReadLine()
           if (-not $line.StartsWith("ROGUE_AGENT_READY ")) { throw "unexpected: $line" }
           $ready = $line.Substring(18) | ConvertFrom-Json
           $headers = @{ "x-rogue-token" = $ready.token }
-          Invoke-RestMethod -Headers $headers "http://127.0.0.1:$($ready.port)/api/environment" | ConvertTo-Json -Depth 4
+          $environment = Invoke-RestMethod -Headers $headers "http://127.0.0.1:$($ready.port)/api/environment"
+          $environment | ConvertTo-Json -Depth 4
+          if (-not $environment.ghidra[0].bundled -or -not $environment.java[0].bundled) { throw "bundled Ghidra and JDK were not detected first" }
           Invoke-RestMethod -Method Post -Headers $headers -ContentType "application/json" -Body "{}" "http://127.0.0.1:$($ready.port)/api/shutdown"
           if (-not $server.WaitForExit(30000)) { $server.Kill(); throw "server did not exit" }
       - name: Native window starts WebView2 and the engine
@@ -178,13 +199,17 @@ jobs:
           $setup = Get-ChildItem out/RogueAgent-*-Setup-x64.exe | Select-Object -First 1
           $dir = Join-Path $env:RUNNER_TEMP "RogueAgentInstall"
           Start-Process $setup.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/DIR=`"$dir`"" -Wait
-          if (-not (Test-Path "$dir/RogueAgent.exe")) { throw "installer did not install RogueAgent.exe" }
+          foreach ($file in "RogueAgent.exe", "ghidra/support/analyzeHeadless.bat", "ghidra/Ghidra/Features/Decompiler/os/win_x86_64/decompile.exe", "jdk/bin/javac.exe") {
+            if (-not (Test-Path "$dir/$file")) { throw "installer did not install $file" }
+          }
           Start-Process "$dir/unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES" -Wait
       - uses: actions/upload-artifact@v4
         with:
           name: rogue-agent-installer
           path: out/RogueAgent-*-Setup-x64.exe
           if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
 
   ghidra-linux:
     name: Real Ghidra on Linux (bridge correctness + benchmark)
@@ -312,7 +337,8 @@ jobs:
           $elapsed = Measure-Command { & "$env:JAVA_HOME\bin\java.exe" -XshowSettings:properties -version 2>&1 | Out-Null }
           "java -XshowSettings cold start: $([math]::Round($elapsed.TotalSeconds, 1)) s"
       - name: Packaged app end to end (open, analyze, decompile)
-        run: node scripts/desktop/e2e-desktop.mjs --package out/RogueAgent-win-x64 --target bench/sqlite3.exe --ghidra "$env:GHIDRA_INSTALL_DIR" --java "$env:JAVA_HOME"
+        # No --ghidra/--java: the package's bundled Ghidra and JDK must serve.
+        run: node scripts/desktop/e2e-desktop.mjs --package out/RogueAgent-win-x64 --target bench/sqlite3.exe
       - run: npm ci
         if: ${{ !cancelled() }}
       - run: npm run build

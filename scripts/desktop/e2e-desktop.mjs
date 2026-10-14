@@ -4,7 +4,9 @@
 // analysis, list functions, decompile, and shut down cleanly.
 //
 //   node scripts/desktop/e2e-desktop.mjs --package out/RogueAgent-win-x64 \
-//     --target sqlite3.exe --ghidra <GHIDRA_INSTALL_DIR> [--java <JAVA_HOME>]
+//     --target sqlite3.exe [--ghidra <GHIDRA_INSTALL_DIR> [--java <JAVA_HOME>]]
+//
+// Without --ghidra the package's bundled Ghidra and JDK must be found and used.
 
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
@@ -19,7 +21,7 @@ const { values } = parseArgs({
     timeout: { type: "string", default: "900" },
   },
 });
-for (const name of ["package", "target", "ghidra"])
+for (const name of ["package", "target"])
   if (values[name] === undefined) throw new Error(`--${name} is required`);
 const packageRoot = resolve(values.package);
 const node = join(
@@ -33,7 +35,8 @@ const step = (message) => process.stdout.write(`• ${message}\n`);
 
 const child = spawn(
   process.platform === "win32" ? node : process.execPath,
-  [entry, "--exit-with-stdin", "--port", "0"],
+  // As RogueAgent.exe starts it: the install folder holds the bundled tools.
+  [entry, "--exit-with-stdin", "--port", "0", "--app-dir", packageRoot],
   { stdio: ["pipe", "pipe", "inherit"], windowsHide: true },
 );
 const ready = await new Promise((resolveReady, reject) => {
@@ -78,9 +81,20 @@ try {
   step(
     `engine v${environment.version}; detected Ghidra: ${environment.ghidra.map((g) => g.version).join(", ") || "none"}`,
   );
+  if (values.ghidra === undefined) {
+    const [ghidra] = environment.ghidra;
+    const [java] = environment.java;
+    if (ghidra?.bundled !== true || java?.bundled !== true)
+      throw new Error(
+        `bundled Ghidra and JDK not detected first (found ${JSON.stringify({ ghidra, java })})`,
+      );
+    step(`using bundled Ghidra ${ghidra.version} and JDK ${java.version}`);
+  }
   await api("/api/settings", {
-    ghidraInstallDir: resolve(values.ghidra),
-    ...(values.java === undefined ? {} : { javaHome: resolve(values.java) }),
+    // Unset folders select the bundled tools.
+    ghidraInstallDir:
+      values.ghidra === undefined ? null : resolve(values.ghidra),
+    javaHome: values.java === undefined ? null : resolve(values.java),
     decompileTimeoutSeconds: 120,
   });
   const opened = Date.now();

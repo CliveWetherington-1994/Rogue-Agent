@@ -15,6 +15,7 @@ import {
   DesktopSettingsStore,
   desktopConfigDirectory,
 } from "./desktop/DesktopSettings.js";
+import { findBundledTools } from "./desktop/DesktopDiscovery.js";
 import { DesktopWorkspace } from "./desktop/DesktopWorkspace.js";
 import { startDesktopServer } from "./desktop/DesktopServer.js";
 
@@ -67,10 +68,19 @@ export const runDesktop = async (argv: readonly string[]): Promise<number> => {
   const settings = await DesktopSettingsStore.load(
     join(configDirectory, "settings.json"),
   );
+  const applicationDirectory =
+    values["app-dir"] !== undefined && isAbsolute(values["app-dir"])
+      ? values["app-dir"]
+      : undefined;
+  const bundled = await findBundledTools(applicationDirectory);
   const workspace = new DesktopWorkspace({
     environment,
     logger,
     settings: () => settings.current,
+    bundled: {
+      ...(bundled.ghidra === undefined ? {} : { ghidra: bundled.ghidra.path }),
+      ...(bundled.java === undefined ? {} : { java: bundled.java.path }),
+    },
   });
   let stopping: Promise<void> | undefined;
   const shutdown = (): Promise<void> => {
@@ -88,10 +98,6 @@ export const runDesktop = async (argv: readonly string[]): Promise<number> => {
     process.stderr.write("--port must be an integer between 0 and 65535\n");
     return 2;
   }
-  const applicationDirectory =
-    values["app-dir"] !== undefined && isAbsolute(values["app-dir"])
-      ? values["app-dir"]
-      : undefined;
   const handle = await startDesktopServer({
     workspace,
     settings,

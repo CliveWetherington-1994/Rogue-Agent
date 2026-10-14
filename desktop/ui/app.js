@@ -681,6 +681,52 @@ $("export-button").addEventListener("click", async () => {
 
 // ------------------------------------------------------- welcome & setup
 
+/**
+ * Remember a found installation; the bundled one is used without saving its
+ * path, so moving or reinstalling the app never leaves it stale.
+ */
+function rememberFoundTools(settings, ghidra, java) {
+  if (
+    ghidra.path &&
+    settings.ghidraInstallDir === null &&
+    !ghidra.entry?.bundled
+  )
+    void api("/api/settings", {
+      body: { ghidraInstallDir: ghidra.path },
+    }).catch(() => undefined);
+  if (java.path && settings.javaHome === null && !java.entry?.bundled)
+    void api("/api/settings", { body: { javaHome: java.path } }).catch(
+      () => undefined,
+    );
+}
+
+/** Setup checks for the Ghidra provider; remembers found (not bundled) tools. */
+function ghidraSetupChecks({ settings, ghidra, java }) {
+  const ghidraPath = settings.ghidraInstallDir ?? ghidra[0]?.path ?? null;
+  const ghidraEntry = ghidra.find((g) => g.path === ghidraPath);
+  const javaPath = settings.javaHome ?? java[0]?.path ?? null;
+  const javaEntry = java.find((j) => j.path === javaPath);
+  const where = (entry, path) =>
+    `<span class="muted">${entry?.bundled ? "bundled" : escapeHtml(path)}</span>`;
+  const unsupported =
+    ghidraEntry && !ghidraEntry.supported
+      ? ' <span class="bad">(12.1.x recommended)</span>'
+      : "";
+  rememberFoundTools(
+    settings,
+    { path: ghidraPath, entry: ghidraEntry },
+    { path: javaPath, entry: javaEntry },
+  );
+  return [
+    ghidraPath
+      ? `<div class="check"><span class="ok">✓</span><span>Ghidra ${escapeHtml(ghidraEntry?.version ?? "")} ${where(ghidraEntry, ghidraPath)}${unsupported}</span></div>`
+      : '<div class="check"><span class="bad">✗</span><span>Ghidra 12.1 not found. <a href="https://github.com/NationalSecurityAgency/ghidra/releases" target="_blank" rel="noreferrer">Download it</a>, unzip it, then pick the folder in Settings.</span></div>',
+    javaPath
+      ? `<div class="check"><span class="ok">✓</span><span>JDK ${escapeHtml(javaEntry?.version ?? "")} ${where(javaEntry, javaPath)}</span></div>`
+      : '<div class="check"><span class="bad">✗</span><span>JDK 21+ not found. Install <a href="https://adoptium.net/" target="_blank" rel="noreferrer">Temurin 21</a> or set its folder in Settings.</span></div>',
+  ];
+}
+
 async function renderWelcome() {
   try {
     ui.environment = await api("/api/environment");
@@ -688,33 +734,14 @@ async function renderWelcome() {
     $("setup").innerHTML = `<p class="error">${escapeHtml(error.message)}</p>`;
     return;
   }
-  const { settings, ghidra, java } = ui.environment;
+  const { settings } = ui.environment;
   $("engine").textContent = `v${ui.environment.version}`;
-  const ghidraPath = settings.ghidraInstallDir ?? ghidra[0]?.path ?? null;
-  const ghidraEntry = ghidra.find((g) => g.path === ghidraPath);
-  const javaPath = settings.javaHome ?? java[0]?.path ?? null;
-  const checks = [];
-  if (settings.provider === "ghidra") {
-    checks.push(
-      ghidraPath
-        ? `<div class="check"><span class="ok">✓</span><span>Ghidra ${escapeHtml(ghidraEntry?.version ?? "")} <span class="muted">${escapeHtml(ghidraPath)}</span>${ghidraEntry && !ghidraEntry.supported ? ' <span class="bad">(12.1.x recommended)</span>' : ""}</span></div>`
-        : '<div class="check"><span class="bad">✗</span><span>Ghidra 12.1 not found. <a href="https://github.com/NationalSecurityAgency/ghidra/releases" target="_blank" rel="noreferrer">Download it</a>, unzip it, then pick the folder in Settings.</span></div>',
-      javaPath
-        ? `<div class="check"><span class="ok">✓</span><span>JDK ${escapeHtml(java.find((j) => j.path === javaPath)?.version ?? "")} <span class="muted">${escapeHtml(javaPath)}</span></span></div>`
-        : '<div class="check"><span class="bad">✗</span><span>JDK 21+ not found. Install <a href="https://adoptium.net/" target="_blank" rel="noreferrer">Temurin 21</a> or set its folder in Settings.</span></div>',
-    );
-    if (ghidraPath && settings.ghidraInstallDir === null)
-      void api("/api/settings", {
-        body: { ghidraInstallDir: ghidraPath },
-      }).catch(() => undefined);
-    if (javaPath && settings.javaHome === null)
-      void api("/api/settings", { body: { javaHome: javaPath } }).catch(
-        () => undefined,
-      );
-  } else
-    checks.push(
-      `<div class="check"><span class="${settings.idaMcpConfigPath ? "ok" : "bad"}">${settings.idaMcpConfigPath ? "✓" : "✗"}</span><span>IDA via ida-pro-mcp ${escapeHtml(settings.idaMcpConfigPath ?? "— set the configuration file in Settings")}</span></div>`,
-    );
+  const checks =
+    settings.provider === "ghidra"
+      ? ghidraSetupChecks(ui.environment)
+      : [
+          `<div class="check"><span class="${settings.idaMcpConfigPath ? "ok" : "bad"}">${settings.idaMcpConfigPath ? "✓" : "✗"}</span><span>IDA via ida-pro-mcp ${escapeHtml(settings.idaMcpConfigPath ?? "— set the configuration file in Settings")}</span></div>`,
+        ];
   $("setup").innerHTML = checks.join("");
   $("recent").innerHTML =
     settings.recentFiles.length === 0
@@ -735,34 +762,64 @@ async function openSettings() {
   const form = $("settings-form");
   const { settings } = environment;
   form.provider.value = settings.provider;
+  // With a bundled tool, an empty field means "use the bundled one".
+  const bundledGhidra = environment.ghidra.find((g) => g.bundled);
+  const bundledJava = environment.java.find((j) => j.bundled);
+  const ghidraChoices = environment.ghidra.filter((g) => !g.bundled);
+  const javaChoices = environment.java.filter((j) => !j.bundled);
   form.ghidraInstallDir.value =
-    settings.ghidraInstallDir ?? environment.ghidra[0]?.path ?? "";
-  form.javaHome.value = settings.javaHome ?? environment.java[0]?.path ?? "";
+    settings.ghidraInstallDir ??
+    (bundledGhidra ? "" : (environment.ghidra[0]?.path ?? ""));
+  form.ghidraInstallDir.placeholder = bundledGhidra
+    ? `Bundled Ghidra ${bundledGhidra.version}`
+    : "";
+  form.javaHome.value =
+    settings.javaHome ?? (bundledJava ? "" : (environment.java[0]?.path ?? ""));
+  form.javaHome.placeholder = bundledJava
+    ? `Bundled JDK ${bundledJava.version}`
+    : "";
   form.idaMcpConfigPath.value = settings.idaMcpConfigPath ?? "";
   form.decompileTimeoutSeconds.value = String(settings.decompileTimeoutSeconds);
   form.prefetchCallees.checked = settings.prefetchCallees;
   form.analysisCache.checked = settings.analysisCache;
   void renderCacheSummary();
-  $("ghidra-options").innerHTML = environment.ghidra
+  $("ghidra-options").innerHTML = ghidraChoices
     .map(
       (g) =>
         `<option value="${escapeHtml(g.path)}">${escapeHtml(g.version)}</option>`,
     )
     .join("");
-  $("java-options").innerHTML = environment.java
+  $("java-options").innerHTML = javaChoices
     .map(
       (j) =>
         `<option value="${escapeHtml(j.path)}">${escapeHtml(j.version)}</option>`,
     )
     .join("");
-  $("ghidra-hint").textContent =
-    environment.ghidra.length === 0
-      ? "No Ghidra release found automatically."
-      : `Found ${environment.ghidra.map((g) => g.version).join(", ")}`;
-  $("java-hint").textContent =
-    environment.java.length === 0
-      ? "No JDK 21+ found automatically."
-      : `Found ${environment.java.map((j) => j.version).join(", ")}`;
+  const hint = (bundled, choices, label, none) =>
+    [
+      bundled
+        ? `Leave empty to use the bundled ${label} ${bundled.version}.`
+        : "",
+      choices.length === 0
+        ? bundled
+          ? ""
+          : none
+        : `Also found ${choices.map((c) => c.version).join(", ")}.`,
+    ]
+      .filter(Boolean)
+      .join(" ");
+  $("ghidra-hint").textContent = hint(
+    bundledGhidra,
+    ghidraChoices,
+    "Ghidra",
+    "No Ghidra release found automatically.",
+  );
+  $("java-hint").textContent = hint(
+    bundledJava,
+    javaChoices,
+    "JDK",
+    "No JDK 21+ found automatically.",
+  );
   $("settings-error").classList.add("hidden");
   $("settings-dialog").showModal();
 }
