@@ -51,7 +51,10 @@ jobs:
       - run: npm run test:fast
       - name: Desktop server smoke test
         run: |
-          node scripts/rogue-agent-desktop.mjs --port 0 --exit-with-stdin > ready.txt &
+          # Background jobs read /dev/null, so --exit-with-stdin would stop the
+          # server as soon as it starts; /api/shutdown ends it instead.
+          node scripts/rogue-agent-desktop.mjs --port 0 > ready.txt &
+          server=$!
           for i in $(seq 1 50); do grep -q ROGUE_AGENT_READY ready.txt && break; sleep 0.2; done
           ready=$(sed -n 's/^ROGUE_AGENT_READY //p' ready.txt)
           port=$(node -e "console.log(JSON.parse(process.argv[1]).port)" "$ready")
@@ -59,6 +62,7 @@ jobs:
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$port/api/state)" = 401
           curl -fsS -H "x-rogue-token: $token" http://127.0.0.1:$port/api/state
           curl -fsS -H "x-rogue-token: $token" -H 'content-type: application/json' -d '{}' http://127.0.0.1:$port/api/shutdown
+          wait "$server"
 
   package:
     name: Build Windows package
