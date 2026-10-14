@@ -45,23 +45,24 @@ Alt+←/→ for history, ↑/↓ in the function list.
 
 CI runs the same requests through both engines with Ghidra 12.1.4 on
 GitHub-hosted 4-core runners. The target is a SQLite 3.54 shell built for
-Windows (1.8 MB, 2,505 functions). Both engines produced identical pseudocode
-for all 136 sampled functions.
+Windows (1.8 MB, 2,505 functions). The table gives Rogue Agent's speed relative
+to upstream (above 1× is faster) over two CI runs of the same commit. Both
+engines produced identical pseudocode for all 136 sampled functions.
 
-| Measurement                            | Linux: upstream → Rogue Agent | Windows: upstream → Rogue Agent |
-| -------------------------------------- | ----------------------------- | ------------------------------- |
-| First open (import and auto-analysis)  | 133.0 s → 131.1 s             | 114.1 s → 107.0 s               |
-| Reopen the same binary                 | 135.5 s → 7.5 s (18×)         | 111.7 s → 10.1 s (11×)          |
-| 120 functions requested at once        | 3.76 s → 3.19 s (1.2×)        | 3.20 s → 2.68 s (1.2×)          |
-| 16 largest functions requested at once | 42.5 s → 27.3 s (1.6×)        | 36.6 s → 25.2 s (1.5×)          |
-| One function at a time (average)       | 27.4 ms → 25.1 ms             | 24.2 ms → 19.1 ms               |
-| Resolve a function by name (average)   | 7.7 ms → 1.3 ms               | 3.6 ms → 1.4 ms                 |
+| Measurement                            | Linux                          | Windows                          |
+| -------------------------------------- | ------------------------------ | -------------------------------- |
+| First open (import and auto-analysis)  | 0.9–1.0×                       | 1.0–1.1×                         |
+| Reopen the same binary                 | 16–18× (128–135 s → 7.5–7.9 s) | 11–16× (112–176 s → 10.1–11.1 s) |
+| 120 functions requested at once        | 1.0–1.2×                       | 1.0–1.2×                         |
+| 16 largest functions requested at once | 1.4–1.6×                       | 1.3–1.5×                         |
+| One function at a time                 | 0.9–1.1×                       | 1.0–1.3×                         |
+| Resolve a function by name             | 3.1–5.9×                       | 2.6–3.9×                         |
 
-These figures are from one CI run. Every run publishes the same table in the
-step summary of the **Real Ghidra** jobs in the [CI workflow](.github/workflows/ci.yml).
-Runner speed varies a lot between runs, especially on Windows (upstream's
-120-function time ranged from 2.5 s to 4.5 s), so compare the two engines
-within one run.
+Every CI run publishes its own table in the step summary of the **Real
+Ghidra** jobs in the [CI workflow](.github/workflows/ci.yml). Runner speed
+varies a lot between runs, especially on Windows: upstream's first open took
+114 s in one run and 180 s in the other. Compare the two engines within one
+run.
 
 | Change                        | Effect                                                                                                                                                                                                                                                                              |
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
