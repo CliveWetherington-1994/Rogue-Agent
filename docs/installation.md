@@ -756,7 +756,8 @@ or several MCP calls in flight, are decompiled as one window by a pool of
 Ghidra decompilers, one per core up to eight; each request still returns its
 own result and Evidence. Each pooled decompiler is a native process that loads
 the language before its first function, so the pool is kept for the session
-and discarded when the Program changes. Large functions, where the native
+and discarded when the Program changes. On the 1.8 MB SQLite benchmark each
+one held about 100 MB. Large functions, where the native
 decompiler does most of the work, gain the most; for short functions the
 JVM side dominates and windows roughly break even. Decompiled text is cached
 per function until the Program changes, so repeat views decompile once. Set
