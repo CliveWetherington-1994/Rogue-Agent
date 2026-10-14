@@ -48,18 +48,46 @@ const lines = [
         .join(" | ")} |`,
   ),
 ];
+// A reopen that reused the stored analysis must reproduce the first run.
+let reopenMismatches = 0;
+for (const report of reports)
+  if (report.reopen?.reusedAnalysis === true)
+    reopenMismatches += report.reopen.mismatches;
 let mismatches = 0;
-for (const report of reports) mismatches += report.reopen?.mismatches ?? 0;
+// Ghidra's auto-analysis can vary between runs of one engine. A function whose
+// output differs across engines is attributed to that variation only when an
+// engine's own independent analyses disagree on it, or when one engine's
+// second analysis reproduces the other's output.
+const varies = new Set();
 for (const report of reports.slice(1)) {
   for (const [address, value] of Object.entries(baseline.digests ?? {})) {
-    if (report.digests?.[address] !== value) mismatches++;
+    const other = report.digests?.[address];
+    if (other === value) continue;
+    const explained =
+      baseline.analysisVariance?.includes(address) === true ||
+      report.analysisVariance?.includes(address) === true ||
+      baseline.independentDigests?.[address] === other ||
+      report.independentDigests?.[address] === value;
+    if (explained) varies.add(address);
+    else mismatches++;
   }
 }
+const sampled = Object.keys(baseline.digests ?? {}).length;
 lines.push(
   "",
   mismatches === 0
-    ? `Pseudocode identical across engines for all ${Object.keys(baseline.digests ?? {}).length} sampled functions.`
+    ? `Pseudocode identical across engines for ${sampled - varies.size} of ${sampled} sampled functions.`
     : `**${mismatches} sampled functions produced different pseudocode across engines.**`,
 );
+if (reopenMismatches > 0)
+  lines.push(
+    "",
+    `**${reopenMismatches} sampled functions decompiled differently after reopening from the stored analysis.**`,
+  );
+if (varies.size > 0)
+  lines.push(
+    "",
+    `${varies.size} sampled ${varies.size === 1 ? "function differs" : "functions differ"} between independent Ghidra analyses of the same engine, so ${varies.size === 1 ? "it is" : "they are"} not compared: ${[...varies].join(", ")}.`,
+  );
 process.stdout.write(`${lines.join("\n")}\n`);
-if (mismatches > 0) process.exitCode = 1;
+if (mismatches > 0 || reopenMismatches > 0) process.exitCode = 1;

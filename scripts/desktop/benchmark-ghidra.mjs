@@ -224,41 +224,75 @@ try {
   report.closeMs = now() - started;
 }
 
-// 5. Second open of the same binary in a fresh session: a full re-analysis
-// without a cross-session cache, an import of the stored analysis with one.
-if (report.batch !== undefined) {
-  const reopened = createBinarySession(config.value, silentLogger, environment);
+/** Open the target in a new session and digest every sampled function. */
+const sessionDigests = async (sessionEnvironment) => {
+  const sessionConfig = parseConfig(sessionEnvironment);
+  if (!sessionConfig.ok)
+    throw new Error(errors.projectAnalysisError(sessionConfig.error).message);
+  const fresh = createBinarySession(
+    sessionConfig.value,
+    silentLogger,
+    sessionEnvironment,
+  );
   try {
     let started = now();
-    const opened = await reopened.open(resolve(values.target), {
+    const opened = await fresh.open(resolve(values.target), {
       providerId: "ghidra",
     });
     if (!opened.ok)
       throw new Error(errors.projectAnalysisError(opened.error).message);
-    const result = await reopened.execute("list_documents", {});
+    const result = await fresh.execute("list_documents", {});
     if (!result.ok)
       throw new Error(errors.projectAnalysisError(result.error).message);
-    report.reopenStartupMs = now() - started;
+    const startupMs = now() - started;
     const [document] = result.value.result;
-    const check = Object.keys(report.digests).slice(0, 8);
     started = now();
-    let mismatches = 0;
-    for (const address of check) {
-      const code = await reopened.execute("procedure_pseudo_code", {
-        document,
-        procedure: address,
-      });
-      const value = code.ok ? digest(code.value.result) : "error";
-      if (value !== report.digests[address]) mismatches++;
-    }
-    report.reopen = {
-      checkedFunctions: check.length,
-      mismatches,
-      decompileMs: now() - started,
-    };
+    const digests = Object.fromEntries(
+      await Promise.all(
+        Object.keys(report.digests).map(async (address) => {
+          const code = await fresh.execute("procedure_pseudo_code", {
+            document,
+            procedure: address,
+          });
+          return [address, code.ok ? digest(code.value.result) : "error"];
+        }),
+      ),
+    );
+    return { startupMs, decompileMs: now() - started, digests };
   } finally {
-    await reopened.close();
+    await fresh.close();
   }
+};
+const differing = (digests) =>
+  Object.keys(report.digests).filter(
+    (address) => digests[address] !== report.digests[address],
+  );
+
+if (report.batch !== undefined) {
+  // 6. Second open of the same binary in a fresh session: a full re-analysis
+  // without a cross-session cache, an import of the stored analysis with one.
+  // A stored analysis must reproduce every sampled function exactly.
+  const reopen = await sessionDigests(environment);
+  report.reopenStartupMs = reopen.startupMs;
+  report.reopen = {
+    checkedFunctions: Object.keys(report.digests).length,
+    mismatches: differing(reopen.digests).length,
+    decompileMs: reopen.decompileMs,
+  };
+  // 7. Ghidra's auto-analysis is not fully deterministic (for example which
+  // callees it marks non-returning), so a second independent analysis
+  // records which functions vary between runs of the same engine.
+  const cached = config.value.ghidraAnalysisCache?.enabled === true;
+  const independent = cached
+    ? await sessionDigests({
+        ...environment,
+        REA_GHIDRA_ANALYSIS_CACHE: "off",
+      })
+    : reopen;
+  report.independentDigests = independent.digests;
+  report.analysisVariance = differing(independent.digests);
+  // Only a reused analysis must reproduce the first run exactly.
+  report.reopen.reusedAnalysis = cached;
 }
 if (scratchCache !== undefined)
   await rm(scratchCache, { recursive: true, force: true });
@@ -271,7 +305,7 @@ const rounded = JSON.parse(
   ),
 );
 process.stdout.write(
-  `${JSON.stringify({ ...rounded, digests: undefined }, null, 2)}\n`,
+  `${JSON.stringify({ ...rounded, digests: undefined, independentDigests: undefined }, null, 2)}\n`,
 );
 if (values.out !== undefined)
   await writeFile(values.out, `${JSON.stringify(rounded, null, 2)}\n`);
