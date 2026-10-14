@@ -30,6 +30,7 @@ import java.security.MessageDigest;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -60,7 +61,9 @@ import ghidra.app.decompiler.DecompiledFunction;
 import ghidra.app.decompiler.ClangCaseToken;
 import ghidra.app.decompiler.ClangNode;
 import ghidra.app.decompiler.parallel.DecompilerCallback;
-import ghidra.app.decompiler.parallel.ParallelDecompiler;
+import generic.concurrent.ConcurrentQ;
+import generic.concurrent.ConcurrentQBuilder;
+import generic.concurrent.QResult;
 import ghidra.util.task.TaskMonitor;
 import ghidra.framework.Application;
 import ghidra.app.util.bin.format.pdb.PdbParserConstants;
@@ -129,6 +132,9 @@ public final class ReaGhidraBridge extends HeadlessScript {
     private static final int DECOMPILE_CACHE_ENTRIES = 256;
     /** Upper bound on selectors accepted by one parallel prefetch request. */
     private static final int MAX_PREFETCH_PROCEDURES = 512;
+    /** Decompiler processes kept for prefetch windows, at most one per core. */
+    private static final int MAX_PREFETCH_WORKERS = 8;
+    private static final String PREFETCH_THREAD_POOL = "REA Decompiler";
     private static final int SOCKET_BUFFER_BYTES = 1 << 16;
     private final Map<FileBytes, Boolean> targetSourceIdentity = new IdentityHashMap<>();
     private String admittedTargetSha256;
@@ -187,6 +193,12 @@ public final class ReaGhidraBridge extends HeadlessScript {
     private Map<String, List<Function>> procedureNameIndex;
     private long procedureNameIndexModification = -1;
     private DecompInterface decompiler;
+    /**
+     * Pooled decompilers for prefetch windows. Each one is a native process that
+     * loads the language before its first function, so the pool lives as long as
+     * the Program state it was opened on rather than one window.
+     */
+    private DecompilerCallback<PrefetchedText> prefetchWorkers;
     /** Seconds before one decompilation is abandoned; 0 waits indefinitely. */
     private int decompileTimeoutSeconds;
     private final DecompileCache decompileCache = new DecompileCache(DECOMPILE_CACHE_ENTRIES);
@@ -252,6 +264,7 @@ public final class ReaGhidraBridge extends HeadlessScript {
             serve(descriptor);
         }
         finally {
+            disposePrefetchWorkers();
             if (decompiler != null) {
                 decompiler.dispose();
                 decompiler = null;
@@ -1406,6 +1419,7 @@ public final class ReaGhidraBridge extends HeadlessScript {
         procedureNameIndex = null;
         decompileCache.clear();
         if (decompiler != null) decompiler.flushCache();
+        disposePrefetchWorkers();
     }
 
     private JsonObject annotationReadback(Function function) {
@@ -3337,7 +3351,7 @@ public final class ReaGhidraBridge extends HeadlessScript {
     }
 
     /**
-     * Decompile the selected functions on all cores and retain their C text so
+     * Decompile the selected functions in parallel and retain their C text so
      * the following procedure_pseudo_code requests are answered from memory.
      * Selection and decompile failures are counted, not raised: the per-function
      * request that follows reports them with its normal error contract.
@@ -3385,29 +3399,29 @@ public final class ReaGhidraBridge extends HeadlessScript {
             }
         }
         else if (!pending.isEmpty()) {
-            DecompilerCallback<PrefetchedText> callback =
-                new DecompilerCallback<>(currentProgram, ReaGhidraBridge::configureDecompiler) {
-                    @Override
-                    public PrefetchedText process(DecompileResults results, TaskMonitor workerMonitor) {
-                        // Text is extracted while the worker's decompiler is alive;
-                        // syntax trees stay with the session decompiler only.
-                        if (results == null || !results.decompileCompleted() || results.isTimedOut())
-                            return null;
-                        String text = decompiledText(results);
-                        return text == null ? null :
-                            new PrefetchedText(results.getFunction().getEntryPoint(), text);
-                    }
-                };
-            callback.setTimeout(decompileTimeoutSeconds);
-            List<PrefetchedText> produced;
+            ConcurrentQ<Function, PrefetchedText> queue = new ConcurrentQBuilder<Function, PrefetchedText>()
+                .setThreadPoolName(PREFETCH_THREAD_POOL)
+                .setMaxInProgress(Math.max(1,
+                    Math.min(Runtime.getRuntime().availableProcessors(), MAX_PREFETCH_WORKERS)))
+                .setCollectResults(true)
+                .setMonitor(monitor)
+                .build(prefetchWorkers());
+            Collection<QResult<Function, PrefetchedText>> produced;
             try {
-                produced = ParallelDecompiler.decompileFunctions(callback, pending.values(), monitor);
+                queue.add(pending.values());
+                produced = queue.waitForResults();
             } finally {
-                callback.dispose();
+                queue.dispose();
             }
             Set<Address> stored = new HashSet<>();
             if (currentProgram.getModificationNumber() == modification) {
-                for (PrefetchedText item : produced) {
+                for (QResult<Function, PrefetchedText> outcome : produced) {
+                    PrefetchedText item;
+                    try {
+                        item = outcome.getResult();
+                    } catch (Exception failure) {
+                        continue;
+                    }
                     if (item == null || !pending.containsKey(item.entry())) continue;
                     decompileCache.put(item.entry(), new CachedDecompile(null, item.text(), modification));
                     stored.add(item.entry());
@@ -3423,6 +3437,33 @@ public final class ReaGhidraBridge extends HeadlessScript {
         result.addProperty("decompiled", decompiled);
         result.addProperty("failed", failed);
         return result;
+    }
+
+    private DecompilerCallback<PrefetchedText> prefetchWorkers() {
+        if (prefetchWorkers == null) {
+            prefetchWorkers = new DecompilerCallback<>(currentProgram, ReaGhidraBridge::configureDecompiler) {
+                @Override
+                public PrefetchedText process(DecompileResults results, TaskMonitor workerMonitor) {
+                    // Text is extracted while the worker's decompiler is alive;
+                    // syntax trees stay with the session decompiler only.
+                    if (results == null || !results.decompileCompleted() || results.isTimedOut())
+                        return null;
+                    String text = decompiledText(results);
+                    return text == null ? null :
+                        new PrefetchedText(results.getFunction().getEntryPoint(), text);
+                }
+            };
+            prefetchWorkers.setTimeout(decompileTimeoutSeconds);
+        }
+        return prefetchWorkers;
+    }
+
+    /** Pooled decompilers cache Program facts, so they end with the state they saw. */
+    private void disposePrefetchWorkers() {
+        if (prefetchWorkers != null) {
+            prefetchWorkers.dispose();
+            prefetchWorkers = null;
+        }
     }
 
     private static String decompiledText(DecompileResults results) {

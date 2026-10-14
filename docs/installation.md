@@ -752,11 +752,15 @@ on the host; do not assume CPU numbers from another machine are valid.
 ### Ghidra decompile controls
 
 Requests for pseudocode that are queued together, such as `batch_decompile`
-or several MCP calls in flight, are decompiled as one window on all cores with
-Ghidra's parallel decompiler; each request still returns its own result and
-Evidence. Results are cached per function until the Program changes, so
-repeat views and `analyze_function` after `procedure_pseudo_code` decompile
-once. Set `REA_GHIDRA_PARALLEL_DECOMPILE=off` to send every request alone.
+or several MCP calls in flight, are decompiled as one window by a pool of
+Ghidra decompilers, one per core up to eight; each request still returns its
+own result and Evidence. Each pooled decompiler is a native process that loads
+the language before its first function, so the pool is kept for the session
+and discarded when the Program changes. Large functions, where the native
+decompiler does most of the work, gain the most; for short functions the
+JVM side dominates and windows roughly break even. Decompiled text is cached
+per function until the Program changes, so repeat views decompile once. Set
+`REA_GHIDRA_PARALLEL_DECOMPILE=off` to send every request alone.
 
 `REA_GHIDRA_DECOMPILE_TIMEOUT_SECONDS` bounds one decompilation (an integer
 from 0 to 86400). The default, `0`, waits indefinitely. With a bound, a

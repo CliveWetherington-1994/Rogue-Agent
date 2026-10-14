@@ -19,7 +19,7 @@ export interface GhidraRequestPlanner {
   reset(): void;
 }
 
-/** Bridge method that decompiles selectors on all cores into its cache. */
+/** Bridge method that decompiles selectors in parallel into its cache. */
 export const GHIDRA_PSEUDOCODE_PREFETCH_METHOD = "prefetch_pseudo_code";
 /** Selectors decompiled together; bounds how long one head waits. */
 export const GHIDRA_PSEUDOCODE_PREFETCH_WINDOW = 64;
@@ -50,7 +50,7 @@ const pseudocodeSelector = (
  * fan-out callers would otherwise decompile functions one after another. When
  * the head and at least one queued request ask for pseudocode in the same
  * document, the planner first sends a prefetch for that window; the bridge
- * decompiles it with Ghidra's ParallelDecompiler and the queued requests are
+ * decompiles it with its pooled Ghidra decompilers and the queued requests are
  * then served from its cache. Results still flow through the unchanged
  * per-request contract. A selector already covered by an earlier window does
  * not trigger another prefetch, so one window is decompiled at a time.
