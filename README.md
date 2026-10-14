@@ -28,37 +28,61 @@ in your browser instead.
 
 - **Open** a binary with the button, by dropping it on the window, from the
   recent list, or with **Open with → Rogue Agent** in Explorer. Ghidra imports
-  and analyzes it once. Every later view reuses that warm session.
+  and analyzes it once, and reopening the same file later skips the analysis.
+  Every view reuses that warm session.
 - **Navigate** with the virtualized function, string and import lists. Filter
   them instantly, optionally with a regex.
   - Every call in the decompiled C is a link.
   - Alt+← and Alt+→ go back and forward.
   - Selecting a string or import shows which functions use it.
 - **Views:** decompiled C, assembly, function info, and callers and callees.
-- **Export C…** decompiles every function into one `.c` file on all cores.
+- **Export C…** decompiles every function into one `.c` file, in parallel.
 
 Keyboard: Ctrl+O to open, Ctrl+F to filter, Ctrl+Shift+E to export,
 Alt+←/→ for history, ↑/↓ in the function list.
 
-## What is faster than upstream REA
+## Speed compared with upstream REA
 
-| Change                        | Effect                                                                                                                                                                                                                             |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Cross-session analysis cache  | The first open stores Ghidra's analyzed program, verified by SHA-256. Reopening the same binary imports it with `-noanalysis`, skipping import and auto-analysis. This applies to the app, the CLI and MCP alike.                  |
-| Parallel decompile windows    | Pseudocode requests that are queued together, such as `batch_decompile`, export, or prefetching callees, are decompiled as one window with Ghidra's `ParallelDecompiler` across all cores. Each request still gets its own result. |
-| Decompile cache in the bridge | Each function is decompiled once per Program state. Repeat views and dossiers come from memory.                                                                                                                                    |
-| Indexed name lookup           | Resolving a function by name was a scan over every function and its entry symbols. It is now one hash lookup.                                                                                                                      |
-| Host-sized JVM                | The heap is 25% of RAM (2–16 GB) instead of a fixed 2 GB. GC and JIT threads scale with the core count instead of two each. This also applies on Windows, through `analyzeHeadless.bat`.                                           |
-| TCP_NODELAY on Windows        | The loopback bridge transport no longer waits up to ~200 ms on Nagle and delayed ACK at the end of each response.                                                                                                                  |
-| Decompile timeout             | `REA_GHIDRA_DECOMPILE_TIMEOUT_SECONDS` (default 120 s in the app) stops one pathological function from wedging the session.                                                                                                        |
-| Background callee prefetch    | After you open a function, its callees are decompiled in one parallel window, so the next click usually hits the cache.                                                                                                            |
-| Lean desktop runtime          | The UI server is ready in about 150 ms and loads the engine in the background. A bundled runtime keeps the module count low for Windows startup.                                                                                   |
+CI runs the same requests through both engines with Ghidra 12.1.4 on
+GitHub-hosted 4-core runners. The target is a SQLite 3.54 shell built for
+Windows (1.8 MB, 2,505 functions). Both engines produced identical pseudocode
+for all 136 sampled functions.
 
-CI measures these changes on GitHub-hosted Windows and Linux runners. It
-benchmarks the same requests against the upstream engine on a real SQLite
-build and checks that both engines produce identical pseudocode. See the
-**Real Ghidra** jobs of the [CI workflow](.github/workflows/ci.yml) and their
-step summaries.
+| Measurement                            | Linux: upstream → Rogue Agent | Windows: upstream → Rogue Agent |
+| -------------------------------------- | ----------------------------- | ------------------------------- |
+| First open (import and auto-analysis)  | 133.0 s → 131.1 s             | 114.1 s → 107.0 s               |
+| Reopen the same binary                 | 135.5 s → 7.5 s (18×)         | 111.7 s → 10.1 s (11×)          |
+| 120 functions requested at once        | 3.76 s → 3.19 s (1.2×)        | 3.20 s → 2.68 s (1.2×)          |
+| 16 largest functions requested at once | 42.5 s → 27.3 s (1.6×)        | 36.6 s → 25.2 s (1.5×)          |
+| One function at a time (average)       | 27.4 ms → 25.1 ms             | 24.2 ms → 19.1 ms               |
+| Resolve a function by name (average)   | 7.7 ms → 1.3 ms               | 3.6 ms → 1.4 ms                 |
+
+These figures are from one CI run. Every run publishes the same table in the
+step summary of the **Real Ghidra** jobs in the [CI workflow](.github/workflows/ci.yml).
+Runner speed varies a lot between runs, especially on Windows (upstream's
+120-function time ranged from 2.5 s to 4.5 s), so compare the two engines
+within one run.
+
+| Change                        | Effect                                                                                                                                                                                                                                                                              |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cross-session analysis cache  | The first open stores Ghidra's analyzed program, verified by SHA-256. Reopening the same binary imports it with `-noanalysis` instead of importing and analyzing again. This applies to the app, the CLI and MCP alike.                                                             |
+| Parallel decompile windows    | Pseudocode requests that are queued together, such as `batch_decompile`, export, or prefetching callees, are decompiled as one window. A pool of Ghidra decompilers, one per core up to eight, is kept for the session. Each request still gets its own result.                     |
+| Decompile cache in the bridge | Decompiled text is kept per function until the program changes, so one window serves every request queued behind it.                                                                                                                                                                |
+| Indexed name lookup           | Resolving a function by name was a scan over every function and its entry symbols. It is now one hash lookup.                                                                                                                                                                       |
+| Host-sized JVM                | The heap is 25% of RAM (2–16 GB) instead of Ghidra's fixed 2 GB, so large binaries have room. GC and JIT threads scale with the core count. This also applies on Windows, through `analyzeHeadless.bat`. On the benchmark binary with four cores it makes no measurable difference. |
+| Decompile timeout             | `REA_GHIDRA_DECOMPILE_TIMEOUT_SECONDS` (default 120 s in the app) stops one pathological function from wedging the session.                                                                                                                                                         |
+| Background callee prefetch    | After you open a function, its callees are decompiled in one window, so the next click usually hits the cache.                                                                                                                                                                      |
+| Lean desktop runtime          | The UI server is ready in about 150 ms and loads the engine in the background. A bundled runtime keeps the module count low for Windows startup.                                                                                                                                    |
+
+Costs:
+
+- Each pooled decompiler is a native process. On the benchmark binary each
+  one held about 100 MB, for the whole session.
+- A session reopened from the cache starts with a cold JVM, so its first
+  decompiles are somewhat slower than in a session that just finished
+  analysis.
+- Parallel windows gain most on large functions. For short functions the
+  JVM side of Ghidra's decompiler does most of the work.
 
 ## Agents and the command line
 
