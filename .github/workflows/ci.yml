@@ -266,9 +266,14 @@ jobs:
         working-directory: upstream
         run: node scripts/verify-real-ghidra.mjs
       - name: Bridge verification (this engine)
+        id: fork_verify
         # A failure upstream also shows on this runner is not this fork's.
         continue-on-error: ${{ steps.upstream_verify.outcome == 'failure' }}
         run: node scripts/verify-real-ghidra.mjs
+      - name: Report verification shared with upstream
+        if: ${{ !cancelled() && steps.upstream_verify.outcome == 'failure' }}
+        run: |
+          echo "::warning::Upstream's real-Ghidra verification fails on this runner (outcome: failure); this engine's verification outcome: ${{ steps.fork_verify.outcome }}. A failure both share is not blocking; see both step logs."
       - name: Benchmark this engine
         if: ${{ !cancelled() }}
         run: node scripts/desktop/benchmark-ghidra.mjs --target bench/sqlite3.exe --label "Rogue Agent" --out bench/fork.json
@@ -352,17 +357,11 @@ jobs:
           Push-Location upstream; npm ci --no-audit --no-fund; npm run build; Pop-Location
           New-Item -ItemType Directory -Force upstream/native/windows/build | Out-Null
           Copy-Item native/windows/build/* upstream/native/windows/build/
-      - name: Upstream Windows bridge verification (baseline)
-        id: upstream_verify
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        working-directory: upstream
-        run: |
-          node scripts/create-ghidra-windows-fixture.mjs
-          node scripts/verify-real-ghidra-windows.mjs
+      # Upstream's Windows verifier at the pinned revision expects search_bytes
+      # but never calls it, so it always fails; this engine's copy exercises
+      # it and must pass.
       - name: Windows bridge verification (this engine)
         if: ${{ !cancelled() }}
-        continue-on-error: ${{ steps.upstream_verify.outcome == 'failure' }}
         run: |
           node scripts/create-ghidra-windows-fixture.mjs
           node scripts/verify-real-ghidra-windows.mjs
