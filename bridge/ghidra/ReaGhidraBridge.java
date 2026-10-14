@@ -83,6 +83,8 @@ import ghidra.program.model.data.StringDataInstance;
 import ghidra.program.model.data.DataType;
 import ghidra.program.model.lang.Register;
 import ghidra.program.model.scalar.Scalar;
+import ghidra.program.model.listing.CodeUnit;
+import ghidra.program.model.listing.CodeUnitIterator;
 import ghidra.program.model.listing.CommentType;
 import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.DataIterator;
@@ -1123,8 +1125,20 @@ public final class ReaGhidraBridge extends HeadlessScript {
         result.addProperty("direction", direction);
         result.add("references", edges);
         result.addProperty("reference_kinds_available", true);
-        JsonArray unresolvedCalls = new JsonArray();
-        if (direction.equals("outgoing")) for (Instruction instruction : scanInstructions(function, Integer.MAX_VALUE).instructions) {
+        result.add(
+            "unresolved_calls",
+            direction.equals("outgoing")
+                ? unresolvedCalls(scanInstructions(function, Integer.MAX_VALUE).instructions)
+                : new JsonArray()
+        );
+        return result;
+    }
+
+    /** Call instructions whose destination ReferenceManager does not resolve. */
+    private JsonArray unresolvedCalls(List<Instruction> instructions) throws Exception {
+        JsonArray unresolved = new JsonArray();
+        for (Instruction instruction : instructions) {
+            monitor.checkCancelled();
             if (!instruction.getFlowType().isCall()) continue;
             boolean resolved = false;
             for (Reference reference : instruction.getReferencesFrom()) if (reference.getReferenceType().isCall()) resolved = true;
@@ -1132,11 +1146,10 @@ public final class ReaGhidraBridge extends HeadlessScript {
                 JsonObject site = new JsonObject();
                 site.addProperty("address", canonicalAddress(instruction.getAddress()));
                 site.addProperty("reason", "Instruction decoder identifies a call but ReferenceManager supplies no call destination");
-                unresolvedCalls.add(site);
+                unresolved.add(site);
             }
         }
-        result.add("unresolved_calls", unresolvedCalls);
-        return result;
+        return unresolved;
     }
 
     private JsonObject inspectNativeDataType(JsonObject params) throws Exception {
@@ -1555,9 +1568,10 @@ public final class ReaGhidraBridge extends HeadlessScript {
         List<Reference> outgoingReferences = collectReferences(function, "outgoing");
         JsonArray incoming = referenceEdges(incomingReferences);
         JsonArray outgoing = referenceEdges(outgoingReferences);
-        JsonArray comments = comments(scan.instructions);
+        JsonArray comments = comments(function);
         JsonArray callers = procedureIdentities(function.getCallingFunctions(monitor));
         JsonArray callees = procedureIdentities(function.getCalledFunctions(monitor));
+        JsonArray unresolvedCalls = unresolvedCalls(scan.instructions);
         JsonArray referencedStrings = referencedStrings(outgoingReferences);
         JsonArray referencedNames = referencedNames(outgoingReferences);
         JsonArray blocks = basicBlockValues(function);
@@ -1576,6 +1590,7 @@ public final class ReaGhidraBridge extends HeadlessScript {
         result.add("callees", callees);
         result.add("incoming_references", incoming);
         result.add("outgoing_references", outgoing);
+        result.add("unresolved_calls", unresolvedCalls);
         result.add("referenced_strings", referencedStrings);
         result.add("referenced_names", referencedNames);
         boolean swift = swiftProgram();
@@ -1591,6 +1606,7 @@ public final class ReaGhidraBridge extends HeadlessScript {
             nativeApiBoundary(function, decompilation)
         );
         result.add("native_value_flow", nativeValueFlow(decompilation));
+        result.add("facet_availability", dossierFacetAvailability(function));
         JsonArray limitations = new JsonArray();
         limitations.add(
             "Unresolved computed or indirect flows without target addresses are not represented as reference edges."
@@ -3765,20 +3781,48 @@ public final class ReaGhidraBridge extends HeadlessScript {
         return result;
     }
 
-    private static JsonArray comments(List<Instruction> instructions) {
+    /**
+     * Facets this dossier reads exhaustively, so an empty value is an observed
+     * absence. Facets omitted here keep their emptiness unknown.
+     */
+    private static JsonObject dossierFacetAvailability(Function function) {
+        JsonObject available = new JsonObject();
+        available.addProperty("available", true);
+        JsonObject result = new JsonObject();
+        if (function.isExternal()) {
+            JsonObject comments = new JsonObject();
+            comments.addProperty("available", false);
+            comments.addProperty(
+                "reason",
+                "Ghidra external functions have no local body; external-location comments are not read."
+            );
+            result.add("comments", comments);
+        } else {
+            result.add("comments", available);
+        }
+        result.add("callers", available);
+        result.add("callees", available);
+        return result;
+    }
+
+    /** Every comment type on every code unit, instruction or data, in the function body. */
+    private JsonArray comments(Function function) throws Exception {
         TreeMap<String, JsonObject> observed = new TreeMap<>();
-        for (Instruction instruction : instructions) {
+        CodeUnitIterator units = currentProgram.getListing().getCodeUnits(function.getBody(), true);
+        while (units.hasNext()) {
+            monitor.checkCancelled();
+            CodeUnit unit = units.next();
             for (CommentType type : CommentType.values()) {
-                String text = instruction.getComment(type);
+                String text = unit.getComment(type);
                 if (text == null || text.isEmpty()) {
                     continue;
                 }
                 String kind = type == CommentType.EOL ? "inline" : "comment";
                 JsonObject item = new JsonObject();
-                item.addProperty("address", canonicalAddress(instruction.getAddress()));
+                item.addProperty("address", canonicalAddress(unit.getAddress()));
                 item.addProperty("kind", kind);
                 item.addProperty("text", text);
-                String key = canonicalAddress(instruction.getAddress()) + "\u0000" +
+                String key = canonicalAddress(unit.getAddress()) + "\u0000" +
                     kind + "\u0000" + type.name() + "\u0000" + text;
                 observed.put(key, item);
                     }

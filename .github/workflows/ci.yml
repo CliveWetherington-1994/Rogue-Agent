@@ -230,7 +230,8 @@ jobs:
         id: ghidra
         with:
           path: ${{ runner.temp }}/ghidra
-          key: ghidra-${{ env.GHIDRA_VERSION }}-v1
+          # v2: earlier entries were extracted without the archive's file modes.
+          key: ghidra-${{ env.GHIDRA_VERSION }}-v2
       - name: Download Ghidra
         if: steps.ghidra.outputs.cache-hit != 'true'
         env:
@@ -238,8 +239,9 @@ jobs:
         run: |
           url=$(gh api "repos/NationalSecurityAgency/ghidra/releases/tags/$GHIDRA_TAG" --jq '.assets[] | select(.name | endswith(".zip")) | .browser_download_url' | head -1)
           curl -fsSL "$url" -o "$RUNNER_TEMP/ghidra.zip"
-          python3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$RUNNER_TEMP/ghidra.zip" "$RUNNER_TEMP/ghidra"
-          chmod -R u+x "$RUNNER_TEMP"/ghidra/*/support "$RUNNER_TEMP"/ghidra/*/Ghidra/Features/Decompiler/os
+          # unzip keeps the release's Unix modes, so every native helper
+          # (decompiler, sleigh, lzfse, GNU demanglers) stays executable.
+          unzip -q "$RUNNER_TEMP/ghidra.zip" -d "$RUNNER_TEMP/ghidra"
       - name: Locate Ghidra
         run: echo "GHIDRA_INSTALL_DIR=$(ls -d "$RUNNER_TEMP"/ghidra/ghidra_*)" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
@@ -262,18 +264,16 @@ jobs:
           cd upstream && npm ci --no-audit --no-fund && npm run build
       - name: Upstream bridge verification (baseline)
         id: upstream_verify
+        # Information only: upstream's outcome never decides this job.
         continue-on-error: true
         working-directory: upstream
         run: node scripts/verify-real-ghidra.mjs
       - name: Bridge verification (this engine)
-        id: fork_verify
-        # A failure upstream also shows on this runner is not this fork's.
-        continue-on-error: ${{ steps.upstream_verify.outcome == 'failure' }}
         run: node scripts/verify-real-ghidra.mjs
-      - name: Report verification shared with upstream
+      - name: Report upstream baseline
         if: ${{ !cancelled() && steps.upstream_verify.outcome == 'failure' }}
         run: |
-          echo "::warning::Upstream's real-Ghidra verification fails on this runner (outcome: failure); this engine's verification outcome: ${{ steps.fork_verify.outcome }}. A failure both share is not blocking; see both step logs."
+          echo "::notice::Upstream's real-Ghidra verification fails on this runner; it is a baseline for comparison only. This engine's verification is blocking; see both step logs."
       - name: Benchmark this engine
         if: ${{ !cancelled() }}
         run: node scripts/desktop/benchmark-ghidra.mjs --target bench/sqlite3.exe --label "Rogue Agent" --out bench/fork.json

@@ -27,6 +27,8 @@ import {
 import { nativeApiBoundarySchema } from "../domain/native/nativeApiBoundary.js";
 import { nativeValueFlowSchema } from "../domain/native/nativeValueFlow.js";
 import type { EvidenceLocation } from "../domain/evidence.js";
+import { combineFunctionRelationshipCoverage } from "../domain/functionCallCoverage.js";
+import type { RelationshipCoverage } from "../domain/relationshipCoverage.js";
 import { err, ok, type Result } from "../domain/result.js";
 import { analysisInputErrorFromIssues } from "../domain/inputIssueProjection.js";
 import {
@@ -163,18 +165,19 @@ const referenceEdge = z
     kind: referenceKind,
   })
   .strict();
+const unresolvedCalls = z.array(
+  z.strictObject({
+    address: ghidraCanonicalAddressSchema,
+    reason: z.string().min(1),
+  }),
+);
 const procedureReferences = z
   .object({
     procedure: procedureIdentity,
     direction: z.enum(["incoming", "outgoing"]),
     references: z.array(referenceEdge),
     reference_kinds_available: z.boolean(),
-    unresolved_calls: z.array(
-      z.strictObject({
-        address: ghidraCanonicalAddressSchema,
-        reason: z.string(),
-      }),
-    ),
+    unresolved_calls: unresolvedCalls,
   })
   .strict();
 const procedureInfo = z
@@ -288,6 +291,8 @@ const ghidraFunctionDossier = functionDossierSchema
       classification,
       body: ghidraFunctionBody,
     }),
+    // Required: callee coverage is derived from the examined call sites.
+    unresolved_calls: unresolvedCalls,
     native_api: ghidraNativeApiBoundary,
     native_value_flow: ghidraNativeValueFlow,
   })
@@ -432,7 +437,45 @@ export interface ParsedGhidraFunctionResult {
   readonly value: JsonValue;
   readonly limitations: readonly string[];
   readonly locations?: readonly EvidenceLocation[];
+  readonly relationshipCoverage?: RelationshipCoverage;
 }
+
+const resolvedCallReferenceLimitation =
+  "Only resolved Ghidra call references are returned; unresolved computed or indirect calls remain unknown, while function classifications distinguish thunks and externals.";
+
+const resolvedCallCoverage: RelationshipCoverage = {
+  status: "complete",
+  diagnostics: [resolvedCallReferenceLimitation],
+};
+
+/**
+ * Caller/callee coverage established by one observation. A dossier's callees
+ * are partial when the bridge decodes call instructions that ReferenceManager
+ * leaves without a destination; those call sites stay listed as unknowns.
+ */
+const relationshipCoverageFor = (
+  operation: GhidraFunctionOperation,
+  value: unknown,
+): RelationshipCoverage | undefined => {
+  if (operation === "procedure_callers" || operation === "procedure_callees")
+    return resolvedCallCoverage;
+  if (operation !== "analyze_function") return undefined;
+  // resultSchemas.analyze_function requires unresolved_calls.
+  const unresolved = (value as z.infer<typeof ghidraFunctionDossier>)
+    .unresolved_calls;
+  return combineFunctionRelationshipCoverage(
+    resolvedCallCoverage,
+    unresolved.length === 0
+      ? resolvedCallCoverage
+      : {
+          status: "partial",
+          limitations: [
+            `Ghidra decoded ${unresolved.length} call instruction${unresolved.length === 1 ? "" : "s"} without a resolved destination; those callees remain unknown.`,
+          ],
+          diagnostics: [resolvedCallReferenceLimitation],
+        },
+  );
+};
 
 /** Require exact, bounded Java-bridge function output before creating Evidence. */
 export const parseGhidraFunctionResult = (
@@ -465,36 +508,38 @@ export const parseGhidraFunctionResult = (
     observation = { value, limitations: [] };
   }
   const parsed = resultSchemas[operation].safeParse(observation.value);
-  return parsed.success
-    ? ok({
-        value: jsonValueSchema.parse(parsed.data),
-        limitations: observation.limitations,
-        ...(observation.selection === undefined
-          ? {}
-          : {
-              locations: [
-                {
-                  kind: "file-offset" as const,
-                  offset: observation.selection.file_offset,
-                },
-                {
-                  kind: "address" as const,
-                  address: observation.selection.mapped_address,
-                },
-                {
-                  kind: "address" as const,
-                  address: observation.selection.procedure_address,
-                },
-              ],
-            }),
-      })
-    : err(
-        new AnalysisOutputError(
-          operation,
-          "Ghidra bridge output did not match the function-analysis contract",
-          { cause: parsed.error },
-        ),
-      );
+  if (!parsed.success)
+    return err(
+      new AnalysisOutputError(
+        operation,
+        "Ghidra bridge output did not match the function-analysis contract",
+        { cause: parsed.error },
+      ),
+    );
+  const relationshipCoverage = relationshipCoverageFor(operation, parsed.data);
+  return ok({
+    value: jsonValueSchema.parse(parsed.data),
+    limitations: observation.limitations,
+    ...(relationshipCoverage === undefined ? {} : { relationshipCoverage }),
+    ...(observation.selection === undefined
+      ? {}
+      : {
+          locations: [
+            {
+              kind: "file-offset" as const,
+              offset: observation.selection.file_offset,
+            },
+            {
+              kind: "address" as const,
+              address: observation.selection.mapped_address,
+            },
+            {
+              kind: "address" as const,
+              address: observation.selection.procedure_address,
+            },
+          ],
+        }),
+  });
 };
 
 const referenceAddresses = (

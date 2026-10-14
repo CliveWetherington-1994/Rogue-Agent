@@ -119,7 +119,8 @@ export const resolveGhidraAnalysisProfile = async (
           load_image_observations: "source-mappings-entry-context-v2",
           function_body_evidence: "complete-inclusive-ranges-v1",
           function_references: "complete-body-and-entry-reference-manager-v2",
-          call_relationship_coverage: "resolved-call-reference-diagnostics-v1",
+          call_relationship_coverage: "resolved-call-reference-diagnostics-v2",
+          function_comment_observations: "body-code-units-all-types-v1",
           string_inventory_evidence: "defined-data-coverage-v1",
           location_resolution: "explicit-address-exact-entry-symbol-first-v3",
           procedure_file_offset_resolution:
@@ -213,7 +214,8 @@ export const resolveGhidraAnalysisProfile = async (
         load_image_observations: "source-mappings-entry-context-v2",
         function_body_evidence: "complete-inclusive-ranges-v1",
         function_references: "complete-body-and-entry-reference-manager-v2",
-        call_relationship_coverage: "resolved-call-reference-diagnostics-v1",
+        call_relationship_coverage: "resolved-call-reference-diagnostics-v2",
+        function_comment_observations: "body-code-units-all-types-v1",
         string_inventory_evidence: "defined-data-coverage-v1",
         location_resolution: "explicit-address-exact-entry-symbol-first-v3",
         procedure_file_offset_resolution:

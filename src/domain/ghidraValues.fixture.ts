@@ -164,6 +164,7 @@ export const ghidraFunctionDossier = (includeAssembly = true): JsonValue => {
     callees: [],
     incoming_references: [],
     outgoing_references: [ghidraReferenceEdge()],
+    unresolved_calls: [],
     referenced_strings: [
       {
         address: "0x402000",
@@ -212,6 +213,11 @@ export const ghidraFunctionDossier = (includeAssembly = true): JsonValue => {
       limitations: [
         "High p-code is a decompiler-derived intra-function representation, not original source or runtime behavior.",
       ],
+    },
+    facet_availability: {
+      comments: { available: true },
+      callers: { available: true },
+      callees: { available: true },
     },
     limitations: [
       "Unresolved computed or indirect flows without target addresses are not represented as reference edges.",
