@@ -159,41 +159,39 @@ const call = (
     outgoing.end(body);
   });
 
-describe("desktop server", () => {
-  const cleanups: (() => Promise<void>)[] = [];
-  afterEach(async () => {
-    for (const cleanup of cleanups.splice(0)) await cleanup();
+const cleanups: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0)) await cleanup();
+});
+
+const start = async () => {
+  const root = await mkdtemp(join(tmpdir(), "rogue-desktop-"));
+  const uiRoot = join(root, "ui");
+  await mkdir(uiRoot);
+  await writeFile(
+    join(uiRoot, "index.html"),
+    "<!doctype html><title>ok</title>",
+  );
+  await writeFile(join(root, "secret.txt"), "outside the UI root");
+  const settings = await DesktopSettingsStore.load(join(root, "settings.json"));
+  const workspace = fakeWorkspace();
+  const handle = await startDesktopServer({
+    workspace,
+    settings,
+    notebooks: new DesktopNotebookStore(join(root, "notebooks")),
+    environment: {},
+    uiRoot,
+    version: "test",
+    onShutdown: () => undefined,
   });
+  cleanups.push(async () => {
+    await handle.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  return { handle, workspace, root };
+};
 
-  const start = async () => {
-    const root = await mkdtemp(join(tmpdir(), "rogue-desktop-"));
-    const uiRoot = join(root, "ui");
-    await mkdir(uiRoot);
-    await writeFile(
-      join(uiRoot, "index.html"),
-      "<!doctype html><title>ok</title>",
-    );
-    await writeFile(join(root, "secret.txt"), "outside the UI root");
-    const settings = await DesktopSettingsStore.load(
-      join(root, "settings.json"),
-    );
-    const workspace = fakeWorkspace();
-    const handle = await startDesktopServer({
-      workspace,
-      settings,
-      notebooks: new DesktopNotebookStore(join(root, "notebooks")),
-      environment: {},
-      uiRoot,
-      version: "test",
-      onShutdown: () => undefined,
-    });
-    cleanups.push(async () => {
-      await handle.close();
-      await rm(root, { recursive: true, force: true });
-    });
-    return { handle, workspace, root };
-  };
-
+describe("desktop server", () => {
   it("serves the UI with a restrictive content security policy", async () => {
     const { handle } = await start();
     const reply = await call(handle, "/", { token: null });
@@ -278,7 +276,9 @@ describe("desktop server", () => {
     });
     expect(reply.status).toBe(400);
   });
+});
 
+describe("desktop notebook routes", () => {
   it("keeps names and notes per binary, only while one is open", async () => {
     const { handle, workspace, root } = await start();
     expect((await call(handle, "/api/notebook")).status).toBe(409);
@@ -342,7 +342,9 @@ describe("desktop server", () => {
         .status,
     ).toBe(400);
   });
+});
 
+describe("desktop server events", () => {
   it("streams state over server-sent events with the token in the query", async () => {
     const { handle } = await start();
     const frame = await new Promise<string>((resolve, reject) => {
