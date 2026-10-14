@@ -30,10 +30,11 @@ const rows = [
   ["Repeat views of the batch", (r) => r.repeatMs, millis],
   ["Single click (cold, avg)", (r) => r.singleClick?.avgMs, millis],
   ["Name lookup (avg)", (r) => r.nameLookup?.avgMs, millis],
+  ["Largest functions (all at once)", (r) => r.largest?.ms, seconds],
   ["Close", (r) => r.closeMs, millis],
 ];
 const lines = [
-  `Target: \`${baseline.target}\` — ${baseline.functionCount} functions (${baseline.internalFunctionCount} internal), batch of ${baseline.batch?.functions}`,
+  `Target: \`${baseline.target}\` — ${baseline.functionCount} functions (${baseline.internalFunctionCount} internal), batch of ${baseline.batch?.functions}, ${baseline.largest?.functions ?? 0} largest functions`,
   "",
   `| Measurement | ${reports.map((r) => r.label).join(" | ")} |`,
   `| --- | ${reports.map(() => "---:").join(" | ")} |`,

@@ -2,7 +2,8 @@
 // Measure Ghidra-backed decompilation through an engine's compiled `dist/`.
 //
 //   node scripts/desktop/benchmark-ghidra.mjs --target sqlite3.exe \
-//     [--engine <repo root>] [--label fork] [--functions 120] [--out result.json]
+//     [--engine <repo root>] [--label fork] [--functions 120] [--largest 16] \
+//     [--out result.json]
 //
 // --engine may point at any checkout with the same dist layout (for example
 // upstream morluto/rea) so both are measured with identical requests. Extra
@@ -26,6 +27,7 @@ const { values } = parseArgs({
     functions: { type: "string", default: "120" },
     singles: { type: "string", default: "12" },
     names: { type: "string", default: "40" },
+    largest: { type: "string", default: "16" },
     out: { type: "string" },
     env: { type: "string", multiple: true, default: [] },
   },
@@ -178,6 +180,44 @@ try {
     lookups: named.length,
     avgMs: (now() - started) / Math.max(1, named.length),
   };
+
+  // 5. The largest functions not sampled above, requested together. Native
+  // decompile time dominates here; for the short functions above the JVM
+  // side does. Size is the distance to the next function's entry.
+  const sampled = new Set([...batch, ...singles].map((item) => item.address));
+  const located = internal
+    .filter((item) => /^0x[0-9a-f]+$/iu.test(item.address))
+    .map((item) => ({ item, at: BigInt(item.address) }))
+    .sort((left, right) => (left.at < right.at ? -1 : 1));
+  const largest = located
+    .slice(0, -1)
+    .map(({ item, at }, index) => ({ item, size: located[index + 1].at - at }))
+    .filter(({ item }) => !sampled.has(item.address))
+    .sort((left, right) => (left.size > right.size ? -1 : 1))
+    .slice(0, Number(values.largest))
+    .map(({ item }) => item);
+  started = now();
+  const largestResults = await Promise.all(
+    largest.map((item) =>
+      run("procedure_pseudo_code", { document, procedure: item.address }).then(
+        (code) => ({ address: item.address, digest: digest(code), ok: true }),
+        (error) => ({
+          address: item.address,
+          error: error.code ?? error.message,
+          ok: false,
+        }),
+      ),
+    ),
+  );
+  report.largest = {
+    functions: largest.length,
+    ms: now() - started,
+    failures: largestResults.filter((result) => !result.ok).length,
+  };
+  for (const result of largestResults)
+    report.digests[result.address] = result.ok
+      ? result.digest
+      : `error:${result.error}`;
 } finally {
   const started = now();
   await session.close();
